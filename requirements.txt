@@ -1,0 +1,6 @@
+aiohttp
+playwright
+python-dotenv
+pillow
+# playwright precisa de instalação extra:
+# playwright install chromium
