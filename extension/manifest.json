@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Canopus Reserva Robô",
   "version": "1.0.0",
-  "description": "Monitorador automático de cotas Canopus com bypass nativo de Turnstile",
+  "description": "Monitor automático de cotas Canopus - Bypass nativo de Cloudflare Turnstile",
   "permissions": [
     "storage",
     "activeTab",
