@@ -1,9 +1,11 @@
 # Canopus Reserva Robô
 
 [![Version](https://img.shields.io/github/v/release/wellingtonpoll/canopus-reserva-robo?label=vers%C3%A3o&color=success)](https://github.com/wellingtonpoll/canopus-reserva-robo/releases)
-[![Tests](https://img.shields.io/badge/tests-175%20passing-brightgreen)](./extension/tests)
+[![Tests CI](https://github.com/wellingtonpoll/canopus-reserva-robo/actions/workflows/test.yml/badge.svg)](https://github.com/wellingtonpoll/canopus-reserva-robo/actions/workflows/test.yml)
+[![Tests](https://img.shields.io/badge/tests-176%20passing-brightgreen)](./extension/tests)
 [![Manifest](https://img.shields.io/badge/Chrome%20MV3-supported-blue)](https://developer.chrome.com/docs/extensions/mv3/intro/)
-[![Node](https://img.shields.io/badge/node-%E2%89%A518-success)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%E2%89%A520-success)](https://nodejs.org)
+[![License](https://img.shields.io/badge/license-ISC-blue)](./LICENSE)
 
 Extensão Chrome (Manifest V3) para monitoramento e reserva automática de cotas no **Portal Parceiros Canopus**.
 
