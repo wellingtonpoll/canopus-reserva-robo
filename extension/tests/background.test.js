@@ -961,6 +961,42 @@ describe("tomarToken", () => {
   });
 });
 
+// ─── State machine: agendarProximoCiclo ─────────────────────────────────────
+
+describe("agendarProximoCiclo", () => {
+  const { agendarProximoCiclo } = require('../background.js');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSleep();
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  test("persiste nextRunAt = now + ms em storage.session", async () => {
+    const t0 = Date.now();
+    await agendarProximoCiclo(45_000);
+    const setCall = chrome.storage.session.set.mock.calls.find(c => c[0].nextRunAt != null);
+    expect(setCall).toBeDefined();
+    expect(setCall[0].nextRunAt).toBeGreaterThanOrEqual(t0 + 45_000 - 50);
+    expect(setCall[0].nextRunAt).toBeLessThanOrEqual(t0 + 45_000 + 50);
+  });
+
+  test("setTimeout cap em MAX_SETTIMEOUT_MS (60s) quando ms é maior", async () => {
+    await agendarProximoCiclo(120_000); // 2min — deve cappear em 60s no setTimeout
+    const stCalls = setTimeout.mock.calls;
+    // Algum setTimeout foi chamado com valor ≤ 60_000 (cap interno)
+    const cappedCall = stCalls.find(c => c[1] <= 60_000 && c[1] >= 1);
+    expect(cappedCall).toBeDefined();
+  });
+
+  test("setTimeout usa o ms cheio quando ≤ cap", async () => {
+    await agendarProximoCiclo(30_000);
+    const stCalls = setTimeout.mock.calls;
+    const matchCall = stCalls.find(c => c[1] === 30_000);
+    expect(matchCall).toBeDefined();
+  });
+});
+
 // ─── ajustarDelayDinamico (AIMD) ────────────────────────────────────────────
 
 describe("ajustarDelayDinamico", () => {

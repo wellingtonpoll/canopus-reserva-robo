@@ -18,8 +18,13 @@
     ]
   },
   "keywords": [],
-  "author": "",
+  "author": "Wellington Luiz do Nascimento",
   "license": "ISC",
+  "homepage": "https://github.com/wellingtonpoll/canopus-reserva-robo",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wellingtonpoll/canopus-reserva-robo.git"
+  },
   "devDependencies": {
     "@tailwindcss/forms": "^0.5.11",
     "jest": "^30.4.2",

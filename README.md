@@ -1,6 +1,7 @@
 # Canopus Reserva Robô
 
-[![Tests](https://img.shields.io/badge/tests-105%20passing-brightgreen)](./extension/tests)
+[![Version](https://img.shields.io/github/v/release/wellingtonpoll/canopus-reserva-robo?label=vers%C3%A3o&color=success)](https://github.com/wellingtonpoll/canopus-reserva-robo/releases)
+[![Tests](https://img.shields.io/badge/tests-110%20passing-brightgreen)](./extension/tests)
 [![Manifest](https://img.shields.io/badge/Chrome%20MV3-supported-blue)](https://developer.chrome.com/docs/extensions/mv3/intro/)
 [![Node](https://img.shields.io/badge/node-%E2%89%A518-success)](https://nodejs.org)
 
@@ -10,16 +11,30 @@ Roda como um Side Panel persistente dentro do navegador, mantém sessão de logi
 
 ---
 
+## 📦 Instalação
+
+Instalação automática em **2 passos** (apenas Windows):
+
+1. **Baixe** o [`install.bat` da release mais recente](https://github.com/wellingtonpoll/canopus-reserva-robo/releases/latest).
+2. **Execute como Administrador** — clique duas vezes no arquivo e autorize o controle de conta de usuário (UAC). O instalador pede elevação automaticamente.
+
+Pronto. Abra o Chrome — a extensão é instalada automaticamente em até 1 minuto via política corporativa (`ExtensionInstallForcelist`). Procure o ícone do robô na barra de extensões.
+
+> **Atualizações automáticas:** novas versões publicadas em [Releases](https://github.com/wellingtonpoll/canopus-reserva-robo/releases) são instaladas pelo Chrome sem nenhuma ação do usuário.
+
+> **Desinstalar:** rode o `uninstall.bat` da release (ou apague a chave `HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist` manualmente).
+
+---
+
 ## Sumário
 
 - [Funcionalidades](#funcionalidades)
-- [Como instalar](#como-instalar)
 - [Como usar](#como-usar)
 - [Configurações](#configurações)
 - [Notificações Telegram](#notificações-telegram)
 - [Modo Teste](#modo-teste)
 - [Como funciona por dentro](#como-funciona-por-dentro)
-- [Desenvolvimento](#desenvolvimento)
+- [🔧 Para desenvolvedores](#-para-desenvolvedores)
 - [Limitações conhecidas](#limitações-conhecidas)
 - [Licença](#licença)
 
@@ -38,39 +53,6 @@ Roda como um Side Panel persistente dentro do navegador, mantém sessão de logi
   - `limite do produto no ponto de venda` → bloqueia o produto na sessão atual
 - **Side Panel** que permanece aberto ao clicar fora da janela (UX mais estável que popup tradicional).
 - **Interface Material Design 3** light theme com cards colapsáveis e logs em tempo real.
-
----
-
-## Como instalar
-
-### Pré-requisitos
-
-- Google Chrome **versão 114+** (Side Panel API)
-- Node.js **18+** apenas se você for fazer build do CSS (já vem pré-buildado no repo)
-
-### Passo a passo
-
-1. **Clone ou baixe o repositório:**
-   ```bash
-   git clone https://github.com/<seu-usuario>/canopus-reserva-robo.git
-   cd canopus-reserva-robo
-   ```
-
-2. **(Opcional) Rebuild do CSS** — só necessário se você modificou os estilos:
-   ```bash
-   npm install
-   npm run build
-   ```
-
-3. **Carregue a extensão no Chrome:**
-   - Abra `chrome://extensions`
-   - Ative **Modo do desenvolvedor** (canto superior direito)
-   - Clique em **Carregar sem compactação**
-   - Selecione a pasta `extension/` do projeto
-
-4. **Fixe o ícone** na barra do navegador (opcional mas recomendado):
-   - Clique no ícone de quebra-cabeça
-   - Clique no alfinete ao lado de "Canopus Reserva Robô"
 
 ---
 
@@ -263,14 +245,14 @@ Ative o toggle **Modo Teste** antes de iniciar para validar o fluxo sem efetivar
 
 ---
 
-## Desenvolvimento
+## 🔧 Para desenvolvedores
 
 ### Stack
 
 - **Manifest V3** Chrome Extension + Side Panel API
 - **JavaScript** vanilla (sem framework)
 - **Tailwind CSS v3** + `@tailwindcss/forms` (build via CLI, output estático)
-- **Jest** para testes unitários (105 testes)
+- **Jest** para testes unitários (110 testes)
 
 ### Estrutura
 
@@ -289,26 +271,113 @@ extension/
     ├── background.test.js     Suite Jest
     └── chrome-mock.js         Mocks chrome.*
 
+install.bat                    Instalador Windows (auto-elevação + force-list)
+update_manifest.xml            Google Update Protocol 2.0 manifest
+pack.sh                        Script de empacotamento .crx + zip da release
 tailwind.config.js             Design tokens MD3
 package.json                   Scripts npm + Jest config
+PRIVACY.md                     Política de privacidade
 CLAUDE.md                      Guia para LLM assistants
 ```
 
-### Comandos
+### Comandos npm
 
 ```bash
 npm install                                       # primeira vez
-npm test                                          # roda todos os 105 testes
+npm test                                          # roda todos os 110 testes
 npm test -- --testNamePattern="sistemaEstaAberto" # filtra por nome
 npm run build                                     # gera extension/popup.css
 npm run build:watch                               # rebuild contínuo durante dev
 ```
 
+### Desenvolvimento local
+
+1. Clone o repositório:
+   ```bash
+   git clone https://github.com/wellingtonpoll/canopus-reserva-robo.git
+   cd canopus-reserva-robo
+   npm install
+   npm run build
+   ```
+2. Abra `chrome://extensions` → ative **Modo do desenvolvedor** → **Carregar sem compactação** → selecione `extension/`.
+
+### Publicar nova versão (release no GitHub)
+
+O ciclo de release distribui a extensão via `install.bat` + `update_manifest.xml` + `.crx` anexados a uma **GitHub Release**. O Chrome do cliente baixa a `.crx` via política `ExtensionInstallForcelist` e atualiza automaticamente sempre que uma nova release é marcada como `latest`.
+
+**1. Bump da versão** no `extension/manifest.json`:
+
+```json
+{
+  "version": "1.0.1"
+}
+```
+
+**2. Rodar tests + build:**
+
+```bash
+npm test         # 110/110 passando
+npm run build    # regenera popup.css
+```
+
+**3. Empacotar:**
+
+```bash
+./pack.sh                # usa key.pem existente — mantém o mesmo Extension ID
+./pack.sh --new-key      # só na PRIMEIRA execução — gera key.pem (BACKUP OBRIGATÓRIO)
+```
+
+A primeira execução gera `key.pem` na raiz do repo. **Guarde essa chave em local seguro** (cofre de senhas, gerenciador secret, etc) — ela define o Extension ID; perdê-la significa novo ID + reinstalação manual em todos os clientes. Está no `.gitignore` e nunca deve ser commitada.
+
+Saída em `dist/`:
+- `canopus-reserva-robo.crx` — binário assinado
+- `update_manifest.xml` — com Extension ID + versão substituídos
+- `install.bat` — com Extension ID substituído
+- `canopus-reserva-robo-v<versão>.zip` — pacote completo (caso prefira distribuir como zip único)
+
+**4. Criar tag + push:**
+
+```bash
+git tag v1.0.1
+git push origin v1.0.1
+```
+
+**5. Criar Release no GitHub:**
+
+- GitHub.com → **Releases** → **Draft a new release**
+- **Tag:** `v1.0.1`
+- **Title:** `v1.0.1`
+- **Anexar individualmente** (NÃO o zip — o instalador depende dos URLs diretos `/latest/download/<arquivo>`):
+  - `dist/canopus-reserva-robo.crx`
+  - `dist/update_manifest.xml`
+  - `dist/install.bat`
+- **Marcar como Latest release** (obrigatório — o instalador resolve `/latest/download/`)
+- Descrever changelog no body
+
+**6. Validar URLs:**
+
+```bash
+curl -I https://github.com/wellingtonpoll/canopus-reserva-robo/releases/latest/download/canopus-reserva-robo.crx
+curl -I https://github.com/wellingtonpoll/canopus-reserva-robo/releases/latest/download/update_manifest.xml
+# devem responder HTTP 302 → 200
+```
+
+**7. Distribuir.** Cliente baixa `install.bat` da release e executa. Chrome instala/atualiza automaticamente em até 1min.
+
+### Como funciona o canal de atualizações
+
+| Componente | Função |
+|------------|--------|
+| `install.bat` | Escreve a política `HKLM\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist` com `EXTENSION_ID;UPDATE_URL` |
+| `update_manifest.xml` | Google Update Protocol v2 — informa ao Chrome qual versão está disponível e onde baixar o `.crx` |
+| `canopus-reserva-robo.crx` | Extensão assinada com `key.pem` — o Chrome valida a assinatura contra o `EXTENSION_ID` |
+| `pack.sh` | Calcula `EXTENSION_ID` deterministicamente a partir do `key.pem` (SHA-256 da chave pública → primeiros 32 hex → mapeados para a-p) e substitui placeholders |
+
 ### Testes
 
 - Cobre helpers puros (`parseGruposConfig`, `sistemaEstaAberto`, `proximaAberturaBR`, `formatarDataBR`, `extrairGrupos`, `extrairReserva`, `parseRetryAfter`, `usuarioExibicao`)
-- Cobre fluxo do ciclo (`runMonitorCycle`) incluindo paralelismo, retries, login automático, modo teste
-- Cobre AIMD (`ajustarDelayDinamico`)
+- Cobre fluxo do ciclo (`runMonitorCycle`) incluindo paralelismo, login automático, modo teste, produtos bloqueados
+- Cobre AIMD (`ajustarDelayDinamico`), token bucket (`tomarToken`), circuit breaker (`registrarHitERateLimit`), state machine (`agendarProximoCiclo`)
 - Cobre tratamento de erros específicos do servidor
 - Mocks de Chrome API em `extension/tests/chrome-mock.js`
 

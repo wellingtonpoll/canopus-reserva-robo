@@ -6,14 +6,21 @@ const RATE_LIMIT_BACKOFF_FACTOR = 2.0;    // AIMD multiplicative increase
 const SUCCESS_DECAY_FACTOR = 0.9;         // AIMD multiplicative decrease (gentle)
 const MAX_DYNAMIC_DELAY = 60;             // ceiling em segundos
 
-// Token bucket — prevenção dura de taxa de saída
-const BUCKET_CAPACITY       = 3;          // burst inicial mínimo
-const BUCKET_REFILL_PER_SEC = 0.15;       // 1 token a cada ~7s, ~9 req/min sustentado
+// Token bucket — prevenção dura de taxa de saída (strict — sem burst)
+const BUCKET_CAPACITY       = 1;          // sem burst
+const BUCKET_REFILL_PER_SEC = 0.1;        // 1 token a cada 10s, 6 req/min sustained max
 
 // Circuit breaker
 const CIRCUIT_HITS_THRESHOLD = 2;         // 2 hits em janela → abre
-const CIRCUIT_WINDOW_MS      = 60_000;    // janela de 60s
+const CIRCUIT_WINDOW_MS      = 120_000;   // janela de 2min — captura hits espaçados
 const CIRCUIT_OPEN_MS        = 10 * 60_000; // pausa de 10min
+
+// Floor obrigatório de DELAY_MIN/MAX (anti-rate-limit)
+const FLOOR_DELAY_MIN = 7;                // alinhado com refill ~10s
+const FLOOR_DELAY_MAX = 12;
+
+// Cap interno em setTimeout — SW pode morrer; alarm re-ativa a cada 1min
+const MAX_SETTIMEOUT_MS = 60_000;
 
 // Backoff longo em rate limit no runPollingLoop
 const RATE_LIMIT_BACKOFF_SEC          = 60;
@@ -24,6 +31,12 @@ const IDLE_INCREMENT     = 0.3;           // 30% a mais por ciclo vazio
 const IDLE_MAX_CICLOS    = 5;             // cap em 5 ciclos vazios
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function agendarProximoCiclo(ms) {
+  const at = Date.now() + ms;
+  await chrome.storage.session.set({ nextRunAt: at });
+  setTimeout(runPollingLoop, Math.min(ms, MAX_SETTIMEOUT_MS));
+}
 
 async function tomarToken() {
   const sess = await chrome.storage.session.get(["bucket"]);
@@ -510,14 +523,20 @@ async function dormirAteAbertura() {
     await telegramNotify(msg);
     await chrome.storage.session.set({ sistemaFechadoLogged: true, usuarioFechado: usuarioFmt });
   }
-  // Cap a 1h pra não depender de setTimeout enorme em SW; alarm periodic + cycle vai reabrir.
-  const sleepMs = Math.min(ms, 1000 * 60 * 60);
-  setTimeout(runPollingLoop, Math.max(1000, sleepMs));
+  const sleepMs = Math.max(1000, Math.min(ms, 1000 * 60 * 60));
+  await agendarProximoCiclo(sleepMs);
 }
 
 async function runPollingLoop() {
-  const { isRunning } = await chrome.storage.session.get(["isRunning"]);
+  const { isRunning, nextRunAt } = await chrome.storage.session.get(["isRunning", "nextRunAt"]);
   if (!isRunning) return;
+
+  // State machine guard — respeita o próximo schedule independente de quem disparou (alarm vs setTimeout)
+  if (nextRunAt && Date.now() < nextRunAt) {
+    const restanteMs = nextRunAt - Date.now();
+    setTimeout(runPollingLoop, Math.min(restanteMs, MAX_SETTIMEOUT_MS));
+    return;
+  }
 
   const { MODO_TESTE } = await chrome.storage.local.get(["MODO_TESTE"]);
 
@@ -526,7 +545,7 @@ async function runPollingLoop() {
   if (sessCb.circuitAberto && Date.now() < sessCb.circuitAberto) {
     const restanteMs = sessCb.circuitAberto - Date.now();
     notificarPopup(`🛑 Circuit breaker aberto. Próxima tentativa em ${(restanteMs/1000).toFixed(0)}s`);
-    setTimeout(runPollingLoop, Math.min(restanteMs, 60_000));
+    await agendarProximoCiclo(restanteMs);
     return;
   }
   if (sessCb.circuitAberto && Date.now() >= sessCb.circuitAberto) {
@@ -569,7 +588,7 @@ async function runPollingLoop() {
       const msg = `${fonte} — pausando ${baseWait}s antes de retry`;
       notificarPopup(msg);
       await telegramNotify(msg);
-      setTimeout(runPollingLoop, baseWait * 1000);
+      await agendarProximoCiclo(baseWait * 1000);
       return;
     }
 
@@ -596,26 +615,43 @@ async function runPollingLoop() {
   const baseDelay = currentMin + triangular * Math.max(0, currentMax - currentMin);
   const delay = baseDelay * idleMultiplier;
 
-  setTimeout(runPollingLoop, delay * 1000);
+  await agendarProximoCiclo(delay * 1000);
 }
 
 async function iniciarMonitoramento() {
-  const { DELAY_MIN = 5, DELAY_MAX = 10 } = await chrome.storage.local.get(["DELAY_MIN", "DELAY_MAX"]);
+  const local = await chrome.storage.local.get(["DELAY_MIN", "DELAY_MAX"]);
+  let dMin = Number(local.DELAY_MIN);
+  let dMax = Number(local.DELAY_MAX);
+  if (!isFinite(dMin) || dMin <= 0) dMin = FLOOR_DELAY_MIN;
+  if (!isFinite(dMax) || dMax <= 0) dMax = FLOOR_DELAY_MAX;
+
+  // Floor enforcement — bloqueia config muito agressiva
+  if (dMin < FLOOR_DELAY_MIN) {
+    notificarPopup(`⚙️ DELAY_MIN ajustado de ${dMin}s para ${FLOOR_DELAY_MIN}s (anti-rate-limit)`);
+    dMin = FLOOR_DELAY_MIN;
+  }
+  if (dMax < FLOOR_DELAY_MAX) {
+    dMax = Math.max(FLOOR_DELAY_MAX, dMin);
+  }
+  if (dMax < dMin) dMax = dMin;
+  // Persistir de volta no local pra UI refletir
+  await chrome.storage.local.set({ DELAY_MIN: dMin, DELAY_MAX: dMax });
+
   await chrome.storage.session.set({
     isRunning: true,
     rateLimitHit: false,
     sistemaFechadoLogged: false,
     produtosBloqueados: [],
-    currentMin: Number(DELAY_MIN),
-    currentMax: Number(DELAY_MAX),
+    currentMin: dMin,
+    currentMax: dMax,
     bucket: { tokens: BUCKET_CAPACITY, lastRefill: Date.now() },
     hitsRecentes: [],
     circuitAberto: null,
-    ciclosVazios: 0
+    ciclosVazios: 0,
+    nextRunAt: null
   });
   await chrome.alarms.create(alarmName, { periodInMinutes: 1 });
   runPollingLoop();
-  console.log("🚀 Monitoramento iniciado");
 }
 
 async function pararMonitoramento() {
@@ -623,14 +659,15 @@ async function pararMonitoramento() {
   await chrome.alarms.clear(alarmName);
   await chrome.storage.local.remove(["idUsuario", "idEmpresa"]);
   notificarPopup("⏹ Monitoramento parado");
-  console.log("⏹ Monitoramento parado");
 }
 
-// Alarm como fallback: reativa loop se SW foi encerrado pelo browser
+// Alarm como fallback: reativa loop se SW foi encerrado pelo browser.
+// Respeita nextRunAt — não fura schedule do RATE_LIMIT/circuit/etc.
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== alarmName) return;
-  const { isRunning } = await chrome.storage.session.get(["isRunning"]);
+  const { isRunning, nextRunAt } = await chrome.storage.session.get(["isRunning", "nextRunAt"]);
   if (!isRunning) return;
+  if (nextRunAt && Date.now() < nextRunAt) return;
   runPollingLoop();
 });
 
@@ -651,10 +688,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
-  console.log("🔥 Canopus Robô instalado!");
 });
-
-console.log("🔥 Background Service Worker do Canopus Robô carregado!");
 
 // Exports para testes automatizados (ignorado no browser)
 if (typeof module !== "undefined") {
@@ -682,6 +716,9 @@ if (typeof module !== "undefined") {
     BUCKET_REFILL_PER_SEC,
     CIRCUIT_HITS_THRESHOLD,
     CIRCUIT_WINDOW_MS,
-    CIRCUIT_OPEN_MS
+    CIRCUIT_OPEN_MS,
+    FLOOR_DELAY_MIN,
+    FLOOR_DELAY_MAX,
+    agendarProximoCiclo
   };
 }

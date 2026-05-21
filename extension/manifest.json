@@ -1,11 +1,14 @@
 {
   "manifest_version": 3,
   "name": "Canopus Reserva Robô",
+  "short_name": "Canopus Robô",
   "version": "1.0.0",
-  "description": "Monitor automático de cotas Canopus - Bypass nativo de Cloudflare Turnstile",
+  "description": "Automatize o monitoramento e a reserva de cotas no Portal Parceiros Canopus, com notificações em tempo real via Telegram.",
+  "author": "Wellington Luiz do Nascimento",
+  "homepage_url": "https://github.com/wellingtonpoll/canopus-reserva-robo",
+  "minimum_chrome_version": "114",
   "permissions": [
     "storage",
-    "scripting",
     "alarms",
     "sidePanel"
   ],
@@ -21,7 +24,8 @@
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",
       "128": "icons/icon128.png"
-    }
+    },
+    "default_title": "Canopus Reserva Robô"
   },
   "side_panel": {
     "default_path": "popup.html"

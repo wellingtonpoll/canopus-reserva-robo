@@ -42,3 +42,11 @@ Thumbs.db
 tmp/
 temp/
 *.tmp
+
+# Distribuição — chave privada NUNCA pode vazar (perde controle do extension ID)
+key.pem
+*.pem
+
+# Build artifacts da release
+dist/
+*.crx
