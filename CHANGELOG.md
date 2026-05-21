@@ -5,6 +5,21 @@ Todas mudanças notáveis deste projeto serão documentadas aqui.
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/), versionamento
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-05-21
+
+### Added
+- **`install.ps1`** — instalador PowerShell nativo (recomendado pra Win10/11). Auto-elevação via `Start-Process -Verb RunAs`, detecção de Chrome instalado, mensagens de erro com diagnóstico contextual (GPO corporativa, antivírus, UAC limitado)
+- **`INSTALL.md`** — guia completo de troubleshooting com 3 opções de instalação (PS1, BAT, manual via Modo Desenvolvedor) + reset/desinstalação + verificação
+
+### Changed
+- **`install.bat`** — mensagens de erro detalhadas com causas e soluções. Detecta Chrome, valida placeholder, auto-elevação melhorada
+- **`pack.sh`** — inclui `install.ps1` + `INSTALL.md` no `.zip` da release
+- README com instruções atualizadas pra ambos instaladores
+
+### Fixed
+- Cliente com Windows sem `cmd` direto conseguiu instalar via PowerShell
+- Erro genérico "HKLM não pode ser modificada" agora explica causas reais (GPO/AV/UAC)
+
 ## [1.1.0] - 2026-05-21
 
 ### Added
@@ -80,6 +95,7 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/), versionament
 - AIMD delay (multiplicação × 2 em rate limit, decay × 0.9 em ciclos limpos)
 - Jest test suite (105 testes iniciais)
 
+[1.1.1]: https://github.com/wellingtonpoll/canopus-reserva-robo/releases/tag/v1.1.1
 [1.1.0]: https://github.com/wellingtonpoll/canopus-reserva-robo/releases/tag/v1.1.0
 [1.0.1]: https://github.com/wellingtonpoll/canopus-reserva-robo/releases/tag/v1.0.1
 [1.0.0]: https://github.com/wellingtonpoll/canopus-reserva-robo/releases/tag/v1.0.0

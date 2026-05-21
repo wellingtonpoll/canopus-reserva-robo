@@ -15,12 +15,16 @@ Roda como um Side Panel persistente dentro do navegador, mantém sessão de logi
 
 ## 📦 Instalação
 
-Instalação automática em **2 passos** (apenas Windows):
+Instalação automática em **2 passos** (Windows 10/11):
 
-1. **Baixe** o [`install.bat` da release mais recente](https://github.com/wellingtonpoll/canopus-reserva-robo/releases/latest).
-2. **Execute como Administrador** — clique duas vezes no arquivo e autorize o controle de conta de usuário (UAC). O instalador pede elevação automaticamente.
+1. **Baixe** o instalador da [release mais recente](https://github.com/wellingtonpoll/canopus-reserva-robo/releases/latest):
+   - **`install.ps1`** (recomendado, PowerShell nativo)
+   - OU `install.bat` (alternativa pra Win7/8 ou se preferir batch)
+2. **Click direito** no arquivo → **"Executar com PowerShell"** (ou "Executar como administrador" pro .bat) → autorizar UAC.
 
-Pronto. Abra o Chrome — a extensão é instalada automaticamente em até 1 minuto via política corporativa (`ExtensionInstallForcelist`). Procure o ícone do robô na barra de extensões.
+Pronto. Abra o Chrome — a extensão é instalada automaticamente em até 1 minuto via política `ExtensionInstallForcelist`. Procure o ícone do robô na barra de extensões.
+
+> **Troubleshooting:** problemas de instalação (PC corporativo, antivírus, UAC limitado) → ver [INSTALL.md](./INSTALL.md) com 3 opções alternativas + diagnóstico.
 
 > **Atualizações automáticas:** novas versões publicadas em [Releases](https://github.com/wellingtonpoll/canopus-reserva-robo/releases) são instaladas pelo Chrome sem nenhuma ação do usuário.
 
@@ -321,7 +325,9 @@ tests/
 └── visual/
     └── latest/                Screenshots da última execução
 
-install.bat                    Instalador Windows (auto-elevação + force-list)
+install.ps1                    Instalador PowerShell (recomendado, Win10/11)
+install.bat                    Instalador Batch (fallback, todos Windows)
+INSTALL.md                     Guia troubleshooting + 3 opções de instalação
 update_manifest.xml            Google Update Protocol 2.0 manifest
 pack.sh                        Script de empacotamento .crx + zip da release
 tailwind.config.js             Design tokens MD3

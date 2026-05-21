@@ -192,10 +192,18 @@ sed -e "s|EXTENSION_ID_PLACEHOLDER|$EXT_ID|g" \
     -e "s|https://github.com/wellingtonpoll/canopus-reserva-robo/releases/latest/download/update_manifest.xml|$UPDATE_URL|g" \
     "$ROOT/install.bat" > "$DIST_DIR/install.bat"
 
+# install.ps1 (PowerShell nativo)
+sed -e "s|EXTENSION_ID_PLACEHOLDER|$EXT_ID|g" \
+    -e "s|https://github.com/wellingtonpoll/canopus-reserva-robo/releases/latest/download/update_manifest.xml|$UPDATE_URL|g" \
+    "$ROOT/install.ps1" > "$DIST_DIR/install.ps1"
+
+# Copia INSTALL.md pra release
+cp "$ROOT/INSTALL.md" "$DIST_DIR/INSTALL.md"
+
 # ─── Zipar pacote final ───────────────────────────────────────────────────────
 echo "[5/5] Criando pacote zip..."
 PKG_ZIP="$DIST_DIR/canopus-reserva-robo-v$VERSION.zip"
-( cd "$DIST_DIR" && zip -qj "$PKG_ZIP" install.bat update_manifest.xml canopus-reserva-robo.crx )
+( cd "$DIST_DIR" && zip -qj "$PKG_ZIP" install.bat install.ps1 INSTALL.md update_manifest.xml canopus-reserva-robo.crx )
 
 echo
 echo "============================================================"
@@ -220,7 +228,9 @@ echo "     - Title: v$VERSION"
 echo "     - Anexar individualmente (NÃO o zip — o instalador precisa de URLs diretas):"
 echo "         • dist/canopus-reserva-robo.crx"
 echo "         • dist/update_manifest.xml"
-echo "         • dist/install.bat"
+echo "         • dist/install.ps1   (PowerShell — recomendado)"
+echo "         • dist/install.bat   (Batch — fallback)"
+echo "         • dist/INSTALL.md    (guia de troubleshooting)"
 echo "     - Body: changelog da versão"
 echo "     - Marcar 'Latest release' (importante — o instalador usa /latest/download/)"
 echo
