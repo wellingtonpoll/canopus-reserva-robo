@@ -48,6 +48,14 @@
       </label>
     </div>
 
+    <!-- Grupos monitorados (standalone, fora do card de Configurações) -->
+    <div class="standalone-field">
+      <div class="field">
+        <label>Grupos monitorados</label>
+        <input type="text" id="grupos" placeholder="009113:3,009114:2">
+      </div>
+    </div>
+
     <!-- Config card -->
     <div class="card" data-collapsible>
       <button class="card-header" type="button" aria-expanded="false">
@@ -68,11 +76,6 @@
             <input type="password" id="senha" placeholder="Senha">
           </div>
 
-          <div class="field">
-            <label>Grupos monitorados</label>
-            <input type="text" id="grupos" placeholder="009113:3,009114:2">
-          </div>
-
           <div class="field-row">
             <div class="field">
               <label>Delay mín. (s)</label>
@@ -84,19 +87,9 @@
             </div>
           </div>
 
-        </div>
-      </div>
-    </div>
-
-    <!-- Telegram card -->
-    <div class="card" data-collapsible>
-      <button class="card-header" type="button" aria-expanded="false">
-        <span class="material-symbols-outlined">send</span>
-        <span class="card-title">Telegram</span>
-        <span class="material-symbols-outlined card-chevron">expand_more</span>
-      </button>
-      <div class="card-body">
-        <div class="card-body-inner">
+          <div class="config-divider">
+            <span class="config-divider-label">Telegram</span>
+          </div>
 
           <div class="field">
             <label>Bot Token</label>
@@ -108,14 +101,30 @@
             <input type="text" id="telegramChatId" placeholder="-100123456789">
           </div>
 
+          <div class="config-divider">
+            <span class="config-divider-label">Suporte</span>
+          </div>
+
+          <div class="toggle-row toggle-row-compact">
+            <div>
+              <div class="toggle-label">Telemetria</div>
+              <div class="toggle-sub">Captura detalhada pra envio ao suporte</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="telemetriaLigada">
+              <span class="slider"></span>
+            </label>
+          </div>
+
         </div>
       </div>
     </div>
 
-    <!-- Save button -->
-    <button class="btn-save" id="saveBtn">
+    <!-- Save button (com indicador de alterações não salvas) -->
+    <button class="btn-save" id="saveBtn" data-dirty="false">
       <span class="material-symbols-outlined icon-sm">save</span>
-      Salvar Configurações
+      <span class="btn-save-label">Salvar Configurações</span>
+      <span class="dirty-dot" aria-hidden="true"></span>
     </button>
 
     <!-- Logs -->
@@ -125,10 +134,20 @@
           <span class="material-symbols-outlined">terminal</span>
           Logs ao vivo
         </span>
-        <button class="btn-clear" id="clearBtn">
-          <span class="material-symbols-outlined">delete_sweep</span>
-          Limpar
-        </button>
+        <div class="logs-actions">
+          <button class="btn-clear" id="exportTelemetriaBtn" title="Exportar telemetria (.json)" hidden>
+            <span class="material-symbols-outlined">download</span>
+            Telemetria
+          </button>
+          <button class="btn-clear" id="copyBtn" title="Copiar logs">
+            <span class="material-symbols-outlined">content_copy</span>
+            Copiar
+          </button>
+          <button class="btn-clear" id="clearBtn" title="Limpar logs">
+            <span class="material-symbols-outlined">delete_sweep</span>
+            Limpar
+          </button>
+        </div>
       </div>
       <div id="logs"></div>
     </div>

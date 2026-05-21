@@ -81,8 +81,16 @@ body {
 /* Direct children of main-scroll hold their size; logs grows to fill */
 .main-scroll > .btn-row,
 .main-scroll > .toggle-row,
+.main-scroll > .standalone-field,
 .main-scroll > .card,
 .main-scroll > .btn-save { flex-shrink: 0; }
+
+/* Standalone field (Grupos monitorados fora do card de Configurações) */
+.standalone-field {
+  background: #f5f3f3;
+  border-radius: 0.75rem;
+  padding: 10px 14px;
+}
 
 /* Action buttons */
 .btn-row {
@@ -277,6 +285,55 @@ body {
 }
 .btn-save:hover { background: #5a4c00; }
 .btn-save:active { transform: scale(0.98); }
+.btn-save .dirty-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ffd43b;
+  margin-left: 4px;
+  opacity: 0;
+  transition: opacity 0.2s;
+  box-shadow: 0 0 0 0 rgba(255, 212, 59, 0.5);
+}
+.btn-save[data-dirty="true"] {
+  background: #8a7300;
+  animation: pulse-save 1.6s infinite;
+}
+.btn-save[data-dirty="true"] .dirty-dot {
+  opacity: 1;
+  animation: pulse-dirty-dot 1.5s infinite;
+}
+@keyframes pulse-save {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 212, 59, 0); }
+  50%      { box-shadow: 0 0 0 3px rgba(255, 212, 59, 0.18); }
+}
+@keyframes pulse-dirty-dot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 212, 59, 0.6); }
+  50%      { box-shadow: 0 0 0 4px rgba(255, 212, 59, 0); }
+}
+
+/* Divisor visual dentro do card Configurações (separa campos Canopus dos campos Telegram) */
+.config-divider {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.config-divider::before,
+.config-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #e4e2e2;
+}
+.config-divider-label {
+  font-family: 'Hanken Grotesk', sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  color: #7e775f;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
 
 /* Logs */
 .logs-card {
@@ -322,6 +379,21 @@ body {
 }
 .btn-clear .material-symbols-outlined { font-size: 14px; }
 .btn-clear:hover { color: #ff6b6b; }
+#copyBtn:hover { color: #ffd43b; }
+#exportTelemetriaBtn { color: #79b8f5; }
+#exportTelemetriaBtn:hover { color: #a8d1ff; }
+.logs-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Toggle compacto dentro do card Configurações */
+.toggle-row-compact {
+  padding: 6px 10px;
+  background: #f5f3f3;
+  border-radius: 0.5rem;
+}
 
 #logs {
   flex: 1;

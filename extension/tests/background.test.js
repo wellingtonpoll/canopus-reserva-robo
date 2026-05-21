@@ -156,6 +156,21 @@ describe("apiPost", () => {
     });
   });
 
+  test("body com 1015 → loga snippet do body pra diagnóstico Turnstile", async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false, status: 429,
+      headers: { get: () => null },
+      clone: function() { return { text: async () => "<html>Cloudflare error 1015 — rate limited by zone</html>" }; }
+    });
+    await expect(apiPost("/test", {})).rejects.toMatchObject({ message: "RATE_LIMIT" });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "log",
+        text: expect.stringMatching(/🔎 Body 429.*1015/)
+      })
+    );
+  });
+
   test("Retry-After numérico passa pro erro como retryAfterSec", async () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: false, status: 429,
@@ -240,7 +255,12 @@ describe("fazerLogin", () => {
 
 // ─── reservarComLimite ───────────────────────────────────────────────────────
 
-describe("reservarComLimite", () => {
+function mockTabAberta(tabResponse) {
+  chrome.tabs.query.mockResolvedValue([{ id: 42 }]);
+  chrome.tabs.sendMessage.mockResolvedValue(tabResponse);
+}
+
+describe("reservarComLimite (via content-script)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSleep();
@@ -250,37 +270,58 @@ describe("reservarComLimite", () => {
       TELEGRAM_TOKEN: "",
       TELEGRAM_CHAT_ID: ""
     });
+    chrome.tabs.query.mockResolvedValue([{ id: 42 }]);
+    chrome.tabs.sendMessage.mockResolvedValue({ ok: true, reserva: {} });
   });
   afterEach(() => jest.restoreAllMocks());
 
-  test("modo teste — não chama /reservas/add", async () => {
-    global.fetch = jest.fn();
+  test("modo teste — não chama content-script", async () => {
     await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, true);
-    expect(fetch).not.toHaveBeenCalled();
+    expect(chrome.tabs.sendMessage).not.toHaveBeenCalled();
   });
 
   test("modo teste — notifica popup com [TESTE]", async () => {
-    global.fetch = jest.fn();
     await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, true);
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({ action: "log", text: expect.stringContaining("[TESTE]") })
     );
   });
 
-  test("chama /reservas/add em modo real", async () => {
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true, status: 200, json: async () => ({ success: true })
-    });
+  test("modo real — roteia via chrome.tabs.sendMessage para tab do portal", async () => {
+    mockTabAberta({ ok: true, reserva: {} });
     await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
-    expect(fetch).toHaveBeenCalledWith(
-      expect.stringContaining("/reservas/add"), expect.any(Object)
+    expect(chrome.tabs.query).toHaveBeenCalledWith({
+      url: "https://parceiros.consorciocanopus.com.br/*"
+    });
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({ action: "reservar_via_dom", grupo: mockGrupo })
     );
   });
 
-  test("incrementa contador de reservas após sucesso", async () => {
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true, status: 200, json: async () => ({ success: true })
-    });
+  test("sem aba do portal — não corrompe contador, retorna semAba", async () => {
+    chrome.tabs.query.mockResolvedValue([]);
+    const reservasPorGrupo = { "009113": 1 };
+    const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, reservasPorGrupo, false);
+    expect(out).toMatchObject({ reservou: false, semAba: true });
+    expect(chrome.tabs.sendMessage).not.toHaveBeenCalled();
+    const counterSet = chrome.storage.local.set.mock.calls.find(c => c[0].reservasPorGrupo);
+    expect(counterSet).toBeUndefined();
+  });
+
+  test("sem aba do portal — loga aviso pro cliente abrir o portal", async () => {
+    chrome.tabs.query.mockResolvedValue([]);
+    await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "log",
+        text: expect.stringMatching(/abra parceiros\.consorciocanopus\.com\.br/)
+      })
+    );
+  });
+
+  test("incrementa contador após sucesso via tab", async () => {
+    mockTabAberta({ ok: true, reserva: { CodigoCota: "9876" } });
     const reservasPorGrupo = { "009113": 1 };
     await reservarComLimite(mockGrupo, 99, 1, "009113", 3, reservasPorGrupo, false);
     expect(chrome.storage.local.set).toHaveBeenCalledWith(
@@ -288,21 +329,17 @@ describe("reservarComLimite", () => {
     );
   });
 
-  test("NÃO incrementa contador se success: false", async () => {
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true, status: 200, json: async () => ({ success: false, message: "Vaga esgotada" })
-    });
+  test("NÃO incrementa contador se tab retorna { ok: false, details }", async () => {
+    mockTabAberta({ ok: false, details: "Vaga esgotada" });
     const reservasPorGrupo = {};
     await reservarComLimite(mockGrupo, 99, 1, "009113", 3, reservasPorGrupo, false);
     const counterSet = chrome.storage.local.set.mock.calls.find(c => c[0].reservasPorGrupo);
-    expect(counterSet).toBeUndefined(); // contador não alterado
+    expect(counterSet).toBeUndefined();
   });
 
   test("remove grupo ao atingir limite", async () => {
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true, status: 200, json: async () => ({ success: true })
-    });
-    const reservasPorGrupo = { "009113": 2 }; // esta será a 3ª (limite=3)
+    mockTabAberta({ ok: true, reserva: {} });
+    const reservasPorGrupo = { "009113": 2 };
     await reservarComLimite(mockGrupo, 99, 1, "009113", 3, reservasPorGrupo, false);
     const setCall = chrome.storage.local.set.mock.calls.find(c => c[0].GRUPOS_CONFIG !== undefined);
     expect(setCall[0].GRUPOS_CONFIG).not.toContain("009113");
@@ -310,22 +347,59 @@ describe("reservarComLimite", () => {
   });
 
   test("não remove grupo abaixo do limite", async () => {
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true, status: 200, json: async () => ({ success: true })
-    });
+    mockTabAberta({ ok: true, reserva: {} });
     await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
     const gruposConfigSet = chrome.storage.local.set.mock.calls.find(c => c[0].GRUPOS_CONFIG !== undefined);
     expect(gruposConfigSet).toBeUndefined();
   });
 
-  test("rate limit em /reservas/add — lança RATE_LIMIT sem corromper contador", async () => {
-    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 429 });
-    const reservasPorGrupo = {};
-    await expect(
-      reservarComLimite(mockGrupo, 99, 1, "009113", 3, reservasPorGrupo, false)
-    ).rejects.toMatchObject({ message: "RATE_LIMIT" });
+  test("TURNSTILE_TIMEOUT do content-script — grava cooldown 60s e não corrompe contador", async () => {
+    mockTabAberta({ ok: false, erro: "TURNSTILE_TIMEOUT" });
+    const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
+    expect(out).toMatchObject({ reservou: false, turnstile: true });
+    const coolCall = chrome.storage.session.set.mock.calls.find(c => c[0].gruposEmCooldown);
+    expect(coolCall).toBeDefined();
+    expect(coolCall[0].gruposEmCooldown["009113"]).toBeGreaterThan(Date.now() + 50_000);
     const counterSet = chrome.storage.local.set.mock.calls.find(c => c[0].reservasPorGrupo);
     expect(counterSet).toBeUndefined();
+  });
+
+  test("TURNSTILE_TIMEOUT — loga aviso (não é silencioso)", async () => {
+    mockTabAberta({ ok: false, erro: "TURNSTILE_TIMEOUT" });
+    await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "log",
+        text: expect.stringMatching(/Turnstile timeout no grupo 009113/)
+      })
+    );
+  });
+
+  test("FASE_2_PENDENTE_SELECTORS — sinaliza pendência sem erro fatal", async () => {
+    mockTabAberta({ ok: false, erro: "FASE_2_PENDENTE_SELECTORS" });
+    const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
+    expect(out).toMatchObject({ reservou: false, fase2Pendente: true });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "log",
+        text: expect.stringMatching(/Fase 2/)
+      })
+    );
+  });
+
+  test("content-script não injetado — orienta cliente a recarregar aba", async () => {
+    chrome.tabs.query.mockResolvedValue([{ id: 42 }]);
+    chrome.tabs.sendMessage.mockRejectedValue(
+      new Error("Could not establish connection. Receiving end does not exist.")
+    );
+    const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
+    expect(out).toMatchObject({ reservou: false, erro: "CONTENT_SCRIPT_NAO_INJETADO" });
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "log",
+        text: expect.stringMatching(/Recarregue a aba.*F5/)
+      })
+    );
   });
 });
 
@@ -387,6 +461,8 @@ describe("runMonitorCycle", () => {
     jest.clearAllMocks();
     mockSleep();
     chrome.storage.session.get.mockResolvedValue({});
+    chrome.tabs.query.mockResolvedValue([{ id: 42 }]);
+    chrome.tabs.sendMessage.mockResolvedValue({ ok: true, reserva: {} });
   });
   afterEach(() => jest.restoreAllMocks());
 
@@ -409,17 +485,15 @@ describe("runMonitorCycle", () => {
     return { ok: true, status: 200, json: async () => ({ success: true, data: [grupos] }) };
   }
 
-  function fetchReservaOk() {
-    return { ok: true, status: 200, json: async () => ({ success: true }) };
-  }
-
-  test("ciclo com vaga (grupo no config) — chama buscarGrupos + reservar", async () => {
+  test("ciclo com vaga (grupo no config) — buscarGrupos via fetch + reserva via content-script", async () => {
     storageWith();
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce(fetchGruposOk([mockGrupo]))
-      .mockResolvedValueOnce(fetchReservaOk());
+    global.fetch = jest.fn().mockResolvedValue(fetchGruposOk([mockGrupo]));
+    chrome.tabs.sendMessage.mockResolvedValue({ ok: true, reserva: {} });
     await runMonitorCycle();
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(1); // só buscarGrupos
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(
+      42, expect.objectContaining({ action: "reservar_via_dom" })
+    );
   });
 
   test("grupo não está no config (CD_Grupo diferente) — não reserva", async () => {
@@ -490,19 +564,19 @@ describe("runMonitorCycle", () => {
     const grupo2 = { ...mockGrupo, CD_Grupo: "009114", ID_Grupo: 67890, ID_Produto: 3, NM_Produto: "Outro" };
     storageWith({ GRUPOS_CONFIG: "009113:3,009114:3" });
 
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce(fetchGruposOk([mockGrupo, grupo2]))
-      .mockResolvedValueOnce({ ok: false, status: 500 })
-      .mockResolvedValue(fetchReservaOk());
+    global.fetch = jest.fn().mockResolvedValue(fetchGruposOk([mockGrupo, grupo2]));
+    chrome.tabs.sendMessage
+      .mockResolvedValueOnce({ ok: false, erro: "ALGUM_ERRO" })
+      .mockResolvedValue({ ok: true, reserva: {} });
 
     await expect(runMonitorCycle()).resolves.toBeUndefined();
   });
 
-  test("modo teste — não chama /reservas/add", async () => {
+  test("modo teste — não chama content-script", async () => {
     storageWith({ MODO_TESTE: true });
     global.fetch = jest.fn().mockResolvedValue(fetchGruposOk([mockGrupo]));
     await runMonitorCycle();
-    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(chrome.tabs.sendMessage).not.toHaveBeenCalled();
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({ text: expect.stringContaining("[TESTE]") })
     );
@@ -510,9 +584,8 @@ describe("runMonitorCycle", () => {
 
   test("loga '🔍 Buscando por cotas' quando há detectados", async () => {
     storageWith();
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce(fetchGruposOk([mockGrupo]))
-      .mockResolvedValueOnce(fetchReservaOk());
+    global.fetch = jest.fn().mockResolvedValue(fetchGruposOk([mockGrupo]));
+    chrome.tabs.sendMessage.mockResolvedValue({ ok: true, reserva: {} });
     await runMonitorCycle();
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -548,11 +621,9 @@ describe("runMonitorCycle", () => {
 
   test("Telegram '🍀 Cota encontrada' antes da reserva", async () => {
     storageWith({ TELEGRAM_TOKEN: "BOT", TELEGRAM_CHAT_ID: "CHAT" });
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce(fetchGruposOk([mockGrupo]))
-      .mockResolvedValueOnce({ ok: true })           // telegram encontrada
-      .mockResolvedValueOnce(fetchReservaOk())       // /reservas/add
-      .mockResolvedValue({ ok: true });              // telegrams seguintes
+    global.fetch = jest.fn().mockResolvedValue({ ok: true });  // grupos + telegrams
+    global.fetch.mockResolvedValueOnce(fetchGruposOk([mockGrupo]));
+    chrome.tabs.sendMessage.mockResolvedValue({ ok: true, reserva: {} });
     await runMonitorCycle();
     const telegramBodies = fetch.mock.calls
       .filter(c => String(c[0]).includes("api.telegram.org"))
@@ -560,24 +631,28 @@ describe("runMonitorCycle", () => {
     expect(telegramBodies.some(t => /🍀 Cota 009113 encontrada/.test(t))).toBe(true);
   });
 
-  test("Telegram '🎉 Reservado!' detalhado após sucesso", async () => {
+  test("CD_Grupo duplicado no resultado da API — dedup, só 1 sendMessage por grupo", async () => {
+    storageWith();
+    const grupoDup = { ...mockGrupo, ID_Bem: 99 }; // mesmo CD_Grupo, bem diferente
+    global.fetch = jest.fn().mockResolvedValue(fetchGruposOk([mockGrupo, grupoDup]));
+    chrome.tabs.sendMessage.mockResolvedValue({ ok: true, reserva: {} });
+    await runMonitorCycle();
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  test("Telegram '🎉 Reservado!' detalhado após sucesso via content-script", async () => {
     storageWith({ TELEGRAM_TOKEN: "BOT", TELEGRAM_CHAT_ID: "CHAT" });
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce(fetchGruposOk([mockGrupo]))
-      .mockResolvedValueOnce({ ok: true })  // telegram encontrada
-      .mockResolvedValueOnce({              // /reservas/add com data aninhado
-        ok: true, status: 200,
-        json: async () => ({
-          success: true,
-          data: [[{
-            CodigoCota: "9876",
-            NomeProduto: "Imóvel 300k",
-            DataReserva: "2026-05-20T22:14:11",
-            DataValidade: "2026-05-21T22:14:11"
-          }]]
-        })
-      })
-      .mockResolvedValue({ ok: true });
+    global.fetch = jest.fn().mockResolvedValue({ ok: true });
+    global.fetch.mockResolvedValueOnce(fetchGruposOk([mockGrupo]));
+    chrome.tabs.sendMessage.mockResolvedValue({
+      ok: true,
+      reserva: {
+        CodigoCota: "9876",
+        NomeProduto: "Imóvel 300k",
+        DataReserva: "2026-05-20T22:14:11",
+        DataValidade: "2026-05-21T22:14:11"
+      }
+    });
     await runMonitorCycle();
     const telegramBodies = fetch.mock.calls
       .filter(c => String(c[0]).includes("api.telegram.org"))
@@ -601,19 +676,18 @@ describe("reservarComLimite — retorno", () => {
       TELEGRAM_TOKEN: "",
       TELEGRAM_CHAT_ID: ""
     });
+    chrome.tabs.query.mockResolvedValue([{ id: 42 }]);
+    chrome.tabs.sendMessage.mockResolvedValue({ ok: true, reserva: {} });
   });
   afterEach(() => jest.restoreAllMocks());
 
   test("modo teste → { teste: true, grupoId, produto }", async () => {
-    global.fetch = jest.fn();
     const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, true);
     expect(out).toEqual({ teste: true, grupoId: "009113", produto: "Consórcio Imóvel 300k" });
   });
 
   test("sucesso sem conclusão → { reservou: true, novoTotal, limite, concluido: false }", async () => {
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true, status: 200, json: async () => ({ success: true })
-    });
+    chrome.tabs.sendMessage.mockResolvedValue({ ok: true, reserva: {} });
     const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, { "009113": 1 }, false);
     expect(out).toMatchObject({
       reservou: true, grupoId: "009113", novoTotal: 2, limite: 3, concluido: false
@@ -621,25 +695,21 @@ describe("reservarComLimite — retorno", () => {
   });
 
   test("sucesso atinge limite → concluido: true", async () => {
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true, status: 200, json: async () => ({ success: true })
-    });
+    chrome.tabs.sendMessage.mockResolvedValue({ ok: true, reserva: {} });
     const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, { "009113": 2 }, false);
     expect(out.concluido).toBe(true);
   });
 
-  test("success: false → { reservou: false }", async () => {
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true, status: 200, json: async () => ({ success: false })
-    });
+  test("tab retorna { ok: false } sem details → { reservou: false, erro }", async () => {
+    chrome.tabs.sendMessage.mockResolvedValue({ ok: false, erro: "UNKNOWN_DOM_STATE" });
     const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
-    expect(out).toMatchObject({ reservou: false, grupoId: "009113", produto: "Consórcio Imóvel 300k" });
+    expect(out).toMatchObject({ reservou: false, grupoId: "009113", erro: "UNKNOWN_DOM_STATE" });
   });
 });
 
-// ─── P1.2 — Erros específicos do servidor em reservarComLimite ──────────────
+// ─── P1.2 — Erros do backend mapeados pelo content-script ────────────────────
 
-describe("reservarComLimite — erros específicos", () => {
+describe("reservarComLimite — erros do backend via content-script", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSleep();
@@ -648,23 +718,24 @@ describe("reservarComLimite — erros específicos", () => {
       TELEGRAM_TOKEN: "", TELEGRAM_CHAT_ID: ""
     });
     chrome.storage.session.get.mockResolvedValue({});
+    chrome.tabs.query.mockResolvedValue([{ id: 42 }]);
   });
   afterEach(() => jest.restoreAllMocks());
 
-  test('"restrição vigente" → lança SISTEMA_FECHADO', async () => {
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true, status: 200,
-      json: async () => ({ success: false, details: "Há uma restrição vigente para efetuar reservas neste momento." })
+  test('details "restrição vigente" → lança SISTEMA_FECHADO', async () => {
+    chrome.tabs.sendMessage.mockResolvedValue({
+      ok: false,
+      details: "Há uma restrição vigente para efetuar reservas neste momento."
     });
     await expect(
       reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false)
     ).rejects.toThrow("SISTEMA_FECHADO");
   });
 
-  test('"limite de reservas desse produto" → adiciona em produtosBloqueados', async () => {
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true, status: 200,
-      json: async () => ({ success: false, details: "Limite de reservas desse produto para o ponto de venda atingido." })
+  test('details "limite de reservas desse produto" → adiciona em produtosBloqueados', async () => {
+    chrome.tabs.sendMessage.mockResolvedValue({
+      ok: false,
+      details: "Limite de reservas desse produto para o ponto de venda atingido."
     });
     const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
     expect(out).toMatchObject({ reservou: false, produtoBloqueado: true });
@@ -673,10 +744,10 @@ describe("reservarComLimite — erros específicos", () => {
     );
   });
 
-  test('body com "1015" → seta rateLimitHit', async () => {
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true, status: 200,
-      json: async () => ({ success: false, details: "error 1015 cloudflare" })
+  test('details com "1015" → seta rateLimitHit', async () => {
+    chrome.tabs.sendMessage.mockResolvedValue({
+      ok: false,
+      details: "error 1015 cloudflare"
     });
     await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
     expect(chrome.storage.session.set).toHaveBeenCalledWith(
@@ -868,7 +939,7 @@ describe("registrarHitERateLimit (circuit breaker)", () => {
   });
 
   test("1 hit isolado — não abre circuito, seta rateLimitHit", async () => {
-    chrome.storage.session.get.mockResolvedValue({ hitsRecentes: [] });
+    chrome.storage.session.get.mockResolvedValue({ hitsRecentes: [], isRunning: true });
     const out = await registrarHitERateLimit();
     expect(out.circuitOpen).toBe(false);
     expect(chrome.storage.session.set).toHaveBeenCalledWith(
@@ -879,7 +950,7 @@ describe("registrarHitERateLimit (circuit breaker)", () => {
   test("2 hits em 60s — abre circuito por 10min", async () => {
     const agora = Date.now();
     chrome.storage.session.get.mockResolvedValue({
-      hitsRecentes: [agora - 5000]
+      hitsRecentes: [agora - 5000], isRunning: true
     });
     const out = await registrarHitERateLimit();
     expect(out.circuitOpen).toBe(true);
@@ -892,7 +963,7 @@ describe("registrarHitERateLimit (circuit breaker)", () => {
   test("hits antigos (>60s) são filtrados", async () => {
     const antigo = Date.now() - 120_000;
     chrome.storage.session.get.mockResolvedValue({
-      hitsRecentes: [antigo]
+      hitsRecentes: [antigo], isRunning: true
     });
     const out = await registrarHitERateLimit();
     expect(out.circuitOpen).toBe(false);  // antigo descartado, agora só 1 recente
@@ -900,7 +971,7 @@ describe("registrarHitERateLimit (circuit breaker)", () => {
 
   test("circuito já aberto — não re-abre, só marca rateLimitHit", async () => {
     chrome.storage.session.get.mockResolvedValue({
-      circuitAberto: Date.now() + 60_000
+      circuitAberto: Date.now() + 60_000, isRunning: true
     });
     const out = await registrarHitERateLimit();
     expect(out.circuitOpen).toBe(true);
@@ -908,6 +979,13 @@ describe("registrarHitERateLimit (circuit breaker)", () => {
     const setCalls = chrome.storage.session.set.mock.calls;
     const overwriteCb = setCalls.find(c => c[0].circuitAberto != null);
     expect(overwriteCb).toBeUndefined();
+  });
+
+  test("monitoramento parado — ignora hit (não corrompe contador/circuit)", async () => {
+    chrome.storage.session.get.mockResolvedValue({ hitsRecentes: [], isRunning: false });
+    const out = await registrarHitERateLimit();
+    expect(out.ignored).toBe(true);
+    expect(chrome.storage.session.set).not.toHaveBeenCalled();
   });
 });
 
@@ -948,9 +1026,9 @@ describe("tomarToken", () => {
     });
     await tomarToken();
     const setCall = chrome.storage.session.set.mock.calls.find(c => c[0].bucket);
-    // 10s × 0.15 = 1.5 tokens. Consome 1 → fica ~0.5
+    // 10s × BUCKET_REFILL_PER_SEC tokens, clampeado em BUCKET_CAPACITY, depois -1
     expect(setCall[0].bucket.tokens).toBeGreaterThanOrEqual(0);
-    expect(setCall[0].bucket.tokens).toBeLessThanOrEqual(1);
+    expect(setCall[0].bucket.tokens).toBeLessThanOrEqual(BUCKET_CAPACITY - 1);
   });
 
   test("primeiro uso (sem state) — começa com BUCKET_CAPACITY", async () => {
@@ -1007,7 +1085,8 @@ describe("ajustarDelayDinamico", () => {
     chrome.storage.session.get.mockResolvedValue({
       rateLimitHit: true,
       currentMin: 2,
-      currentMax: 4
+      currentMax: 4,
+      isRunning: true
     });
     const out = await ajustarDelayDinamico();
     expect(out.currentMin).toBe(4);
@@ -1019,7 +1098,8 @@ describe("ajustarDelayDinamico", () => {
     chrome.storage.session.get.mockResolvedValue({
       rateLimitHit: true,
       currentMin: 40,
-      currentMax: 50
+      currentMax: 50,
+      isRunning: true
     });
     const out = await ajustarDelayDinamico();
     expect(out.currentMin).toBeLessThanOrEqual(60);
@@ -1032,7 +1112,8 @@ describe("ajustarDelayDinamico", () => {
     chrome.storage.session.get.mockResolvedValue({
       rateLimitHit: false,
       currentMin: 8,
-      currentMax: 12
+      currentMax: 12,
+      isRunning: true
     });
     const out = await ajustarDelayDinamico();
     expect(out.currentMin).toBeCloseTo(7.2, 1);   // 8 * 0.9
@@ -1044,7 +1125,8 @@ describe("ajustarDelayDinamico", () => {
     chrome.storage.session.get.mockResolvedValue({
       rateLimitHit: false,
       currentMin: 2.1,
-      currentMax: 5.1
+      currentMax: 5.1,
+      isRunning: true
     });
     const out = await ajustarDelayDinamico();
     expect(out.currentMin).toBe(2);
@@ -1053,10 +1135,17 @@ describe("ajustarDelayDinamico", () => {
 
   test("primeira chamada (session vazia) → usa floor do user como ponto de partida", async () => {
     chrome.storage.local.get.mockResolvedValue({ DELAY_MIN: 1.5, DELAY_MAX: 4 });
-    chrome.storage.session.get.mockResolvedValue({});
+    chrome.storage.session.get.mockResolvedValue({ isRunning: true });
     const out = await ajustarDelayDinamico();
     expect(out.currentMin).toBe(1.5);
     expect(out.currentMax).toBe(4);
+  });
+
+  test("monitoramento parado — não ajusta delay nem persiste storage", async () => {
+    chrome.storage.local.get.mockResolvedValue({ DELAY_MIN: 1.5, DELAY_MAX: 4 });
+    chrome.storage.session.get.mockResolvedValue({ rateLimitHit: true, isRunning: false });
+    await ajustarDelayDinamico();
+    expect(chrome.storage.session.set).not.toHaveBeenCalled();
   });
 
   test("reseta rateLimitHit após ajuste", async () => {
@@ -1064,7 +1153,8 @@ describe("ajustarDelayDinamico", () => {
     chrome.storage.session.get.mockResolvedValue({
       rateLimitHit: true,
       currentMin: 1,
-      currentMax: 3
+      currentMax: 3,
+      isRunning: true
     });
     await ajustarDelayDinamico();
     expect(chrome.storage.session.set).toHaveBeenCalledWith(
@@ -1077,7 +1167,8 @@ describe("ajustarDelayDinamico", () => {
     chrome.storage.session.get.mockResolvedValue({
       rateLimitHit: true,
       currentMin: 1,
-      currentMax: 3
+      currentMax: 3,
+      isRunning: true
     });
     await ajustarDelayDinamico();
     expect(chrome.storage.session.set).toHaveBeenCalledWith(
@@ -1086,5 +1177,146 @@ describe("ajustarDelayDinamico", () => {
         currentMax: 6
       })
     );
+  });
+});
+
+// ─── Fix 3-H: handler turnstile_challenge + pause em runPollingLoop ─────────
+
+describe("handleTurnstileChallenge", () => {
+  const { handleTurnstileChallenge, TURNSTILE_BLOQUEIO_MS } = require('../background.js');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSleep();
+    chrome.storage.local.get.mockResolvedValue({ TELEGRAM_TOKEN: "", TELEGRAM_CHAT_ID: "" });
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  test("seta turnstileBloqueado + turnstileBloqueadoAte em storage.session", async () => {
+    const antes = Date.now();
+    await handleTurnstileChallenge();
+    const setCall = chrome.storage.session.set.mock.calls.find(c => c[0].turnstileBloqueado === true);
+    expect(setCall).toBeDefined();
+    expect(setCall[0].turnstileBloqueadoAte).toBeGreaterThanOrEqual(antes + TURNSTILE_BLOQUEIO_MS - 50);
+  });
+
+  test("notifica popup com 🚨 Turnstile", async () => {
+    await handleTurnstileChallenge();
+    expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "log",
+        text: expect.stringMatching(/🚨 Turnstile.*resolva.*Robô pausado/)
+      })
+    );
+  });
+
+  test("dispara Telegram quando configurado", async () => {
+    chrome.storage.local.get.mockResolvedValue({
+      TELEGRAM_TOKEN: "BOT", TELEGRAM_CHAT_ID: "CHAT"
+    });
+    global.fetch = jest.fn().mockResolvedValue({ ok: true });
+    await handleTurnstileChallenge();
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("api.telegram.org/botBOT/sendMessage"),
+      expect.any(Object)
+    );
+  });
+});
+
+// ─── Telemetria: sanitize / batching / ring buffer ──────────────────────────
+
+describe("Telemetria — sanitize", () => {
+  const { sanitize } = require('../background.js');
+
+  test("redact Senha/SENHA/password/pwd/secret", () => {
+    const out = sanitize({
+      Usuario: "x", Senha: "abc123", SENHA: "y", password: "z", pwd: "w", secret: "s"
+    });
+    expect(out.Usuario).toBe("x");
+    expect(out.Senha).toBe("***");
+    expect(out.SENHA).toBe("***");
+    expect(out.password).toBe("***");
+    expect(out.pwd).toBe("***");
+    expect(out.secret).toBe("***");
+  });
+
+  test("trunca TELEGRAM_TOKEN para primeiros 6 chars + ...", () => {
+    const out = sanitize({ TELEGRAM_TOKEN: "1234567890:ABCDEF" });
+    expect(out.TELEGRAM_TOKEN).toBe("123456...");
+  });
+
+  test("redact header token longo do Canopus", () => {
+    const out = sanitize({ token: "f33da0eae2de47028f59c60f125c2da3" });
+    expect(out.token).toBe("***");
+  });
+
+  test("recursão em objects e arrays", () => {
+    const out = sanitize({ a: { b: { Senha: "x" } }, arr: [{ password: "y" }] });
+    expect(out.a.b.Senha).toBe("***");
+    expect(out.arr[0].password).toBe("***");
+  });
+
+  test("não quebra com null/undefined/primitives", () => {
+    expect(sanitize(null)).toBeNull();
+    expect(sanitize(undefined)).toBeUndefined();
+    expect(sanitize(42)).toBe(42);
+    expect(sanitize("texto")).toBe("texto");
+  });
+});
+
+describe("Telemetria — telemetria() e flushTelemetria()", () => {
+  const { telemetria, flushTelemetria, TELEMETRIA_MAX_ENTRIES, TELEMETRIA_BATCH_MAX } = require('../background.js');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSleep();
+    chrome.storage.local.get.mockResolvedValue({});
+    chrome.storage.local.set.mockResolvedValue(undefined);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  test("no-op quando TELEMETRIA_LIGADA = false", async () => {
+    chrome.storage.local.get.mockResolvedValue({ TELEMETRIA_LIGADA: false });
+    await telemetria("evento", { foo: 1 });
+    await flushTelemetria();
+    expect(chrome.storage.local.set).not.toHaveBeenCalledWith(
+      expect.objectContaining({ telemetria_buffer: expect.anything() })
+    );
+  });
+
+  test("flush ao atingir TELEMETRIA_BATCH_MAX entries", async () => {
+    chrome.storage.local.get.mockResolvedValue({ TELEMETRIA_LIGADA: true });
+    for (let i = 0; i < TELEMETRIA_BATCH_MAX; i++) {
+      await telemetria("evento", { i });
+    }
+    expect(chrome.storage.local.set).toHaveBeenCalledWith(
+      expect.objectContaining({ telemetria_buffer: expect.any(Array) })
+    );
+  });
+
+  test("entries sanitizadas (Senha → ***)", async () => {
+    chrome.storage.local.get.mockResolvedValue({ TELEMETRIA_LIGADA: true });
+    for (let i = 0; i < TELEMETRIA_BATCH_MAX; i++) {
+      await telemetria("apiPost.req", { body: { Senha: "secret" + i } });
+    }
+    const setCall = chrome.storage.local.set.mock.calls.find(c => c[0].telemetria_buffer);
+    expect(setCall).toBeDefined();
+    const entries = setCall[0].telemetria_buffer;
+    entries.forEach(e => {
+      expect(e.dados.body.Senha).toBe("***");
+    });
+  });
+
+  test("ring buffer mantém só os últimos TELEMETRIA_MAX_ENTRIES", async () => {
+    const existente = Array.from({ length: TELEMETRIA_MAX_ENTRIES - 2 }, (_, i) => ({ t: i, tipo: "x", dados: {} }));
+    chrome.storage.local.get.mockResolvedValue({ TELEMETRIA_LIGADA: true, telemetria_buffer: existente });
+    for (let i = 0; i < TELEMETRIA_BATCH_MAX; i++) {
+      await telemetria("novo", { i });
+    }
+    const setCall = chrome.storage.local.set.mock.calls.find(c => c[0].telemetria_buffer);
+    expect(setCall[0].telemetria_buffer.length).toBe(TELEMETRIA_MAX_ENTRIES);
+    // últimos eventos novos no final
+    const ultimas = setCall[0].telemetria_buffer.slice(-TELEMETRIA_BATCH_MAX);
+    ultimas.forEach(e => expect(e.tipo).toBe("novo"));
   });
 });

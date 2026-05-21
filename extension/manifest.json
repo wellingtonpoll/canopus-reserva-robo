@@ -10,11 +10,19 @@
   "permissions": [
     "storage",
     "alarms",
-    "sidePanel"
+    "sidePanel",
+    "tabs"
   ],
   "host_permissions": [
     "https://parceiros.consorciocanopus.com.br/*",
     "https://prod-api-portalparceiro-canopus.bsn.dev.br/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://parceiros.consorciocanopus.com.br/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
   ],
   "background": {
     "service_worker": "background.js"

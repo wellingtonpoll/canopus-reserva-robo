@@ -20,5 +20,12 @@ global.chrome = {
     sendMessage: jest.fn().mockResolvedValue(undefined),
     onMessage: { addListener: jest.fn() },
     onInstalled: { addListener: jest.fn() }
+  },
+  tabs: {
+    query: jest.fn().mockResolvedValue([]),
+    sendMessage: jest.fn().mockResolvedValue(undefined)
+  },
+  sidePanel: {
+    setPanelBehavior: jest.fn().mockResolvedValue(undefined)
   }
 };

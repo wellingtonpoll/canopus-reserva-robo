@@ -6,14 +6,29 @@ const RATE_LIMIT_BACKOFF_FACTOR = 2.0;    // AIMD multiplicative increase
 const SUCCESS_DECAY_FACTOR = 0.9;         // AIMD multiplicative decrease (gentle)
 const MAX_DYNAMIC_DELAY = 60;             // ceiling em segundos
 
-// Token bucket — prevenção dura de taxa de saída (strict — sem burst)
-const BUCKET_CAPACITY       = 1;          // sem burst
-const BUCKET_REFILL_PER_SEC = 0.1;        // 1 token a cada 10s, 6 req/min sustained max
+// Token bucket — prevenção de rajada, dimensionado pros 3 calls por ciclo (login/skip + buscarGrupos + /reservas/add)
+const BUCKET_CAPACITY       = 3;          // cobre ciclo completo sem starvation no caminho crítico
+const BUCKET_REFILL_PER_SEC = 0.3;        // ~3.3s entre tokens em regime estável
 
 // Circuit breaker
 const CIRCUIT_HITS_THRESHOLD = 2;         // 2 hits em janela → abre
 const CIRCUIT_WINDOW_MS      = 120_000;   // janela de 2min — captura hits espaçados
 const CIRCUIT_OPEN_MS        = 10 * 60_000; // pausa de 10min
+
+// Cooldown por grupo após RATE_LIMIT em /reservas/add — evita martelar mesmo grupoId em ciclos consecutivos
+const GRUPO_COOLDOWN_MS = 30_000;
+
+// Cooldown maior quando Turnstile falha/timeout — usuário ainda pode estar resolvendo no portal
+const TURNSTILE_COOLDOWN_MS = 60_000;
+
+// Pausa do polling loop quando content-script avisa que Turnstile está em modo interativo
+const TURNSTILE_BLOQUEIO_MS = 30_000;
+
+// URL pattern usado pelo chrome.tabs.query pra achar aba do portal
+const PORTAL_TAB_URL = "https://parceiros.consorciocanopus.com.br/*";
+
+// Timeout pra resposta do content-script (cobre o caso comum + Turnstile interativo)
+const TAB_RESERVA_TIMEOUT_MS = 45_000;
 
 // Floor obrigatório de DELAY_MIN/MAX (anti-rate-limit)
 const FLOOR_DELAY_MIN = 7;                // alinhado com refill ~10s
@@ -29,6 +44,85 @@ const CLOUDFLARE_1015_BACKOFF_SEC     = 120;
 // Smart idle
 const IDLE_INCREMENT     = 0.3;           // 30% a mais por ciclo vazio
 const IDLE_MAX_CICLOS    = 5;             // cap em 5 ciclos vazios
+
+// Telemetria (opt-in pelo cliente). Ring buffer em chrome.storage.local + batching em memória.
+const TELEMETRIA_MAX_ENTRIES = 500;
+const TELEMETRIA_BATCH_MAX   = 10;
+const TELEMETRIA_FLUSH_MS    = 2000;
+const TELEMETRIA_BODY_TRUNC  = 2048;
+
+const TELEMETRIA_BATCH = [];
+let TELEMETRIA_FLUSH_TIMER = null;
+
+const SANITIZE_REDACT_KEYS = /^(senha|password|pwd|secret)$/i;
+const SANITIZE_TRUNCATE_KEYS = /^(telegram_?token|telegramtoken|TELEGRAM_TOKEN)$/i;
+const SANITIZE_HEADER_KEYS = /^(token)$/i;  // header "token" do Canopus
+
+function truncateString(s, max) {
+  if (typeof s !== "string") return s;
+  if (s.length <= max) return s;
+  return s.slice(0, max) + `…[+${s.length - max} chars]`;
+}
+
+function sanitize(obj, depth = 0) {
+  if (depth > 8) return "[max-depth]";
+  if (obj == null) return obj;
+  if (typeof obj === "string") return obj;
+  if (typeof obj !== "object") return obj;
+  if (Array.isArray(obj)) return obj.map(v => sanitize(v, depth + 1));
+
+  const out = {};
+  for (const k of Object.keys(obj)) {
+    if (SANITIZE_REDACT_KEYS.test(k)) {
+      out[k] = "***";
+      continue;
+    }
+    if (SANITIZE_TRUNCATE_KEYS.test(k)) {
+      const v = obj[k];
+      out[k] = typeof v === "string" && v.length > 6 ? v.slice(0, 6) + "..." : "***";
+      continue;
+    }
+    if (SANITIZE_HEADER_KEYS.test(k) && typeof obj[k] === "string" && obj[k].length > 16) {
+      out[k] = "***";
+      continue;
+    }
+    out[k] = sanitize(obj[k], depth + 1);
+  }
+  return out;
+}
+
+async function telemetria(tipo, dados) {
+  try {
+    const { TELEMETRIA_LIGADA } = await chrome.storage.local.get(["TELEMETRIA_LIGADA"]);
+    if (!TELEMETRIA_LIGADA) return;
+
+    TELEMETRIA_BATCH.push({ t: Date.now(), tipo, dados: sanitize(dados) });
+
+    if (TELEMETRIA_BATCH.length >= TELEMETRIA_BATCH_MAX) {
+      await flushTelemetria();
+    } else if (!TELEMETRIA_FLUSH_TIMER) {
+      TELEMETRIA_FLUSH_TIMER = setTimeout(() => {
+        flushTelemetria().catch(() => {});
+      }, TELEMETRIA_FLUSH_MS);
+    }
+  } catch (_) { /* nunca quebrar o fluxo principal por telemetria */ }
+}
+
+async function flushTelemetria() {
+  if (TELEMETRIA_FLUSH_TIMER) {
+    clearTimeout(TELEMETRIA_FLUSH_TIMER);
+    TELEMETRIA_FLUSH_TIMER = null;
+  }
+  if (TELEMETRIA_BATCH.length === 0) return;
+  try {
+    const local = await chrome.storage.local.get(["telemetria_buffer"]);
+    const buf = Array.isArray(local.telemetria_buffer) ? local.telemetria_buffer : [];
+    buf.push(...TELEMETRIA_BATCH);
+    TELEMETRIA_BATCH.length = 0;
+    while (buf.length > TELEMETRIA_MAX_ENTRIES) buf.shift();
+    await chrome.storage.local.set({ telemetria_buffer: buf });
+  } catch (_) { /* idem */ }
+}
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -51,6 +145,7 @@ async function tomarToken() {
   if (tokens < 1) {
     const waitSec = (1 - tokens) / BUCKET_REFILL_PER_SEC;
     notificarPopup(`⏱️ Token bucket vazio — aguardando ${waitSec.toFixed(1)}s`);
+    telemetria("bucket.empty", { waitSec, tokens });
     await sleep(waitSec * 1000);
     tokens = 1;
     lastRefill = Date.now();
@@ -61,7 +156,8 @@ async function tomarToken() {
 }
 
 async function registrarHitERateLimit() {
-  const sess = await chrome.storage.session.get(["hitsRecentes", "circuitAberto"]);
+  const sess = await chrome.storage.session.get(["hitsRecentes", "circuitAberto", "isRunning"]);
+  if (!sess.isRunning) return { circuitOpen: false, ignored: true };
   if (sess.circuitAberto && Date.now() < sess.circuitAberto) {
     // Já estamos com circuito aberto; só marca rateLimitHit
     await chrome.storage.session.set({ rateLimitHit: true });
@@ -82,6 +178,7 @@ async function registrarHitERateLimit() {
     });
     const msg = `🛑 Circuit breaker aberto — ${CIRCUIT_HITS_THRESHOLD} hits em ${CIRCUIT_WINDOW_MS/1000}s. Pausando ${CIRCUIT_OPEN_MS/60000}min`;
     notificarPopup(msg);
+    telemetria("circuit.opened", { hits: CIRCUIT_HITS_THRESHOLD, windowSec: CIRCUIT_WINDOW_MS/1000, openMin: CIRCUIT_OPEN_MS/60000 });
     await telegramNotify(msg);
     return { circuitOpen: true };
   }
@@ -114,6 +211,8 @@ function parseRetryAfter(header) {
 async function apiPost(path, body, tentativaNet = 0) {
   await tomarToken();
   const headers = getHeaders();
+  const reqStart = Date.now();
+  telemetria("apiPost.req", { path, body, tentativaNet });
   let resp;
   try {
     resp = await fetch(`${BASE_URL}${path}`, {
@@ -122,6 +221,7 @@ async function apiPost(path, body, tentativaNet = 0) {
       body: JSON.stringify(body)
     });
   } catch (netErr) {
+    telemetria("apiPost.err", { path, kind: "network", message: (netErr && netErr.message) || String(netErr), tentativaNet, latencyMs: Date.now() - reqStart });
     if (tentativaNet < MAX_TENTATIVAS_NET) {
       const wait = 5000 + Math.random() * 10000;
       notificarPopup(`⚠️ Erro de rede. Aguardando ${(wait / 1000).toFixed(0)}s...`);
@@ -146,7 +246,19 @@ async function apiPost(path, body, tentativaNet = 0) {
     } catch (_) { /* corpo ilegível — segue sem detecção 1015 */ }
     const cloudflare1015 = /1015|rate.?limited/i.test(bodyText);
 
+    if (cloudflare1015 && bodyText) {
+      const snippet = bodyText.slice(0, 200).replace(/\s+/g, " ").trim();
+      notificarPopup(`🔎 Body 429 (Cloudflare?): ${snippet}`);
+    }
+
     await registrarHitERateLimit();
+
+    telemetria("apiPost.err", {
+      path, kind: "rate_limit", status: resp.status,
+      retryAfterSec, cloudflare1015,
+      body: truncateString(bodyText, TELEMETRIA_BODY_TRUNC),
+      latencyMs: Date.now() - reqStart
+    });
 
     const err = new Error("RATE_LIMIT");
     err.status = resp.status;
@@ -155,8 +267,17 @@ async function apiPost(path, body, tentativaNet = 0) {
     throw err;
   }
 
-  if (!resp.ok) throw new Error(`HTTP ${resp.status} em ${path}`);
-  return resp.json();
+  if (!resp.ok) {
+    telemetria("apiPost.err", { path, kind: "http", status: resp.status, latencyMs: Date.now() - reqStart });
+    throw new Error(`HTTP ${resp.status} em ${path}`);
+  }
+  const json = await resp.json();
+  telemetria("apiPost.resp", {
+    path, status: resp.status,
+    body: truncateString(JSON.stringify(json), TELEMETRIA_BODY_TRUNC),
+    latencyMs: Date.now() - reqStart
+  });
+  return json;
 }
 
 async function ajustarDelayDinamico() {
@@ -164,7 +285,10 @@ async function ajustarDelayDinamico() {
   const floorMin = Number(DELAY_MIN);
   const floorMax = Number(DELAY_MAX);
 
-  const sess = (await chrome.storage.session.get(["rateLimitHit", "currentMin", "currentMax"])) || {};
+  const sess = (await chrome.storage.session.get(["rateLimitHit", "currentMin", "currentMax", "isRunning"])) || {};
+  if (!sess.isRunning) {
+    return { currentMin: floorMin, currentMax: floorMax };
+  }
   let cMin = sess.currentMin != null ? Number(sess.currentMin) : floorMin;
   let cMax = sess.currentMax != null ? Number(sess.currentMax) : floorMax;
 
@@ -225,6 +349,88 @@ async function reservar(grupo, idUsuario, idEmpresa) {
     NM_Produto: grupo.NM_Produto,
     PZ_Comercializacao: grupo.PZ_Comercializacao
   });
+}
+
+// Reserva via content-script (Fix 3-H). Routes through page DOM context para passar pelo Turnstile.
+// Retorna sempre objeto rotulado com chaves específicas (semAba, turnstileTimeout, fase2Pendente, erro, result).
+async function reservarViaTab(grupo, grupoId) {
+  let tabs;
+  try {
+    tabs = await chrome.tabs.query({ url: PORTAL_TAB_URL });
+  } catch (err) {
+    notificarPopup(`❌ Erro ao consultar abas do portal: ${(err && err.message) || err}`);
+    return { erro: "TABS_QUERY_FAILED" };
+  }
+
+  if (!tabs || tabs.length === 0) {
+    const msg = `⚠️ Cota ${grupoId} encontrada mas robô não consegue reservar — abra parceiros.consorciocanopus.com.br numa aba.`;
+    notificarPopup(msg);
+    telemetria("reserva.tab.req", { grupoId, semAba: true });
+    await telegramNotify(msg);
+    return { semAba: true };
+  }
+
+  const tabId = tabs[0].id;
+  const reqStart = Date.now();
+  telemetria("reserva.tab.req", { grupoId, NM_Produto: grupo.NM_Produto, tabId });
+  let tabResp;
+  try {
+    tabResp = await Promise.race([
+      chrome.tabs.sendMessage(tabId, { action: "reservar_via_dom", grupo }),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("TAB_RESERVA_TIMEOUT")), TAB_RESERVA_TIMEOUT_MS)
+      )
+    ]);
+  } catch (err) {
+    const errMsg = (err && err.message) || String(err);
+    if (errMsg.includes("Receiving end does not exist") || errMsg.includes("Could not establish connection")) {
+      const msg = `⚠️ Content-script não está ativo na aba do portal. Recarregue a aba parceiros.consorciocanopus.com.br (F5) e tente novamente.`;
+      notificarPopup(msg);
+      await telegramNotify(msg);
+      return { erro: "CONTENT_SCRIPT_NAO_INJETADO" };
+    }
+    notificarPopup(`❌ Falha ao falar com content-script (${grupoId}): ${errMsg}`);
+    return { erro: errMsg };
+  }
+
+  if (!tabResp) {
+    notificarPopup(`❌ Content-script não respondeu para ${grupoId}.`);
+    telemetria("reserva.tab.resp", { grupoId, ok: false, erro: "CONTENT_SCRIPT_NO_RESPONSE", latencyMs: Date.now() - reqStart });
+    return { erro: "CONTENT_SCRIPT_NO_RESPONSE" };
+  }
+  telemetria("reserva.tab.resp", { grupoId, ok: !!tabResp.ok, erro: tabResp.erro, latencyMs: Date.now() - reqStart });
+
+  if (tabResp.erro === "TURNSTILE_TIMEOUT") {
+    const msg = `⏰ Turnstile timeout no grupo ${grupoId}. Cooldown ${TURNSTILE_COOLDOWN_MS/1000}s.`;
+    notificarPopup(msg);
+    await telegramNotify(msg);
+    return { turnstileTimeout: true };
+  }
+  if (tabResp.erro === "TURNSTILE_INVISIBLE_TIMEOUT" || tabResp.erro === "TURNSTILE_ERROR") {
+    notificarPopup(`⚠️ Turnstile não resolveu (${tabResp.erro}) no grupo ${grupoId}. Cooldown ${TURNSTILE_COOLDOWN_MS/1000}s.`);
+    return { turnstileError: true };
+  }
+  if (tabResp.erro === "FASE_2_PENDENTE_SELECTORS") {
+    notificarPopup(`⚙️ Cota ${grupoId} detectada mas implementação DOM ainda na Fase 2 — selectors pendentes.`);
+    return { fase2Pendente: true };
+  }
+  if (!tabResp.ok) {
+    // Se content-script reportou details do backend (ex: "restrição vigente", "limite de reservas...")
+    // delega o tratamento pra reservarComLimite que já sabe parsear esses padrões.
+    if (tabResp.details) {
+      return { result: { success: false, details: tabResp.details, message: tabResp.message } };
+    }
+    notificarPopup(`❌ Reserva ${grupoId} falhou via tab: ${tabResp.erro || "erro desconhecido"}`);
+    return { erro: tabResp.erro || "TAB_RESERVA_DESCONHECIDO" };
+  }
+
+  // Sucesso — content-script faz o equivalente de extrairReserva() do lado dele
+  return {
+    result: {
+      success: true,
+      data: [tabResp.reserva || {}]
+    }
+  };
 }
 
 function extrairGrupos(resp) {
@@ -380,7 +586,25 @@ async function reservarComLimite(grupo, uid, eid, grupoId, limite, reservasPorGr
   notificarPopup(msgEncontrada);
   await telegramNotify(msgEncontrada);
 
-  const result = await reservar(grupo, uid, eid);
+  const tabResult = await reservarViaTab(grupo, grupoId);
+  if (tabResult.semAba) {
+    return { reservou: false, grupoId, produto: grupo.NM_Produto, semAba: true };
+  }
+  if (tabResult.turnstileTimeout || tabResult.turnstileError) {
+    const sessCool = await chrome.storage.session.get(["gruposEmCooldown"]);
+    const cool = sessCool.gruposEmCooldown && typeof sessCool.gruposEmCooldown === "object" ? sessCool.gruposEmCooldown : {};
+    cool[grupoId] = Date.now() + TURNSTILE_COOLDOWN_MS;
+    await chrome.storage.session.set({ gruposEmCooldown: cool });
+    return { reservou: false, grupoId, produto: grupo.NM_Produto, turnstile: true };
+  }
+  if (tabResult.fase2Pendente) {
+    return { reservou: false, grupoId, produto: grupo.NM_Produto, fase2Pendente: true };
+  }
+  if (tabResult.erro) {
+    return { reservou: false, grupoId, produto: grupo.NM_Produto, erro: tabResult.erro };
+  }
+
+  const result = tabResult.result;
 
   if (!(result && result.success)) {
     const details = String((result && (result.details || result.message)) || "");
@@ -451,6 +675,8 @@ async function reservarComLimite(grupo, uid, eid, grupoId, limite, reservasPorGr
 }
 
 async function runMonitorCycle() {
+  const cycleStart = Date.now();
+  telemetria("cycle.start", {});
   const stored = await chrome.storage.local.get([
     "idUsuario", "idEmpresa", "GRUPOS_CONFIG", "MODO_TESTE"
   ]);
@@ -474,21 +700,42 @@ async function runMonitorCycle() {
   notificarPopup(`📦 ${grupos.length} grupos consultados`);
 
   const { reservasPorGrupo = {} } = await chrome.storage.local.get(["reservasPorGrupo"]);
-  const sessProdutos = await chrome.storage.session.get(["produtosBloqueados"]);
+  const sessProdutos = await chrome.storage.session.get(["produtosBloqueados", "gruposEmCooldown"]);
   const produtosBloqueados = Array.isArray(sessProdutos.produtosBloqueados) ? sessProdutos.produtosBloqueados : [];
+  const cooldownRaw = sessProdutos.gruposEmCooldown && typeof sessProdutos.gruposEmCooldown === "object" ? sessProdutos.gruposEmCooldown : {};
+  const agoraMs = Date.now();
+  let cooldownLimpou = false;
+  const cooldown = {};
+  for (const k of Object.keys(cooldownRaw)) {
+    if (cooldownRaw[k] > agoraMs) cooldown[k] = cooldownRaw[k];
+    else cooldownLimpou = true;
+  }
+  if (cooldownLimpou) await chrome.storage.session.set({ gruposEmCooldown: cooldown });
   const detectados = [];
 
+  // Dedup por CD_Grupo: API retorna múltiplos bens do mesmo grupo no mesmo ciclo.
+  // Sem dedup, reservaríamos 2× o mesmo grupoId em paralelo (2× sendMessage, 2× cooldown).
+  const jaDetectado = new Set();
+  const dedupContagem = {};
   for (const grupo of grupos) {
     const codigo = String(grupo.CD_Grupo || "");
     if (!(codigo in gruposAlvo)) continue;
+    dedupContagem[codigo] = (dedupContagem[codigo] || 0) + 1;
+    if (jaDetectado.has(codigo)) continue;
 
     const limite = gruposAlvo[codigo];
     const feitas = reservasPorGrupo[codigo] || 0;
     if (feitas >= limite) continue;
 
     if (produtosBloqueados.includes(grupo.ID_Produto)) continue;
+    if (cooldown[codigo]) continue;
 
+    jaDetectado.add(codigo);
     detectados.push({ grupo, grupoId: codigo, limite });
+  }
+  const duplicados = Object.keys(dedupContagem).filter(k => dedupContagem[k] > 1);
+  if (duplicados.length) {
+    telemetria("dedup.applied", { duplicados, contagem: dedupContagem });
   }
 
   if (detectados.length === 0) {
@@ -505,11 +752,23 @@ async function runMonitorCycle() {
   const lista = Object.keys(gruposAlvo).sort().join(", ");
   notificarPopup(`🔍 Buscando por cotas: ${lista}...`);
 
-  await Promise.allSettled(
+  const resultados = await Promise.allSettled(
     detectados.map(d =>
       reservarComLimite(d.grupo, uid, eid, d.grupoId, d.limite, reservasPorGrupo, stored.MODO_TESTE)
     )
   );
+  telemetria("cycle.end", {
+    duracaoMs: Date.now() - cycleStart,
+    detectados: detectados.length,
+    resultados: resultados.map(r => r.status === "fulfilled"
+      ? { ok: true, ...r.value }
+      : { ok: false, erro: (r.reason && r.reason.message) || String(r.reason) })
+  });
+  await flushTelemetria();
+  const fechado = resultados.find(r =>
+    r.status === "rejected" && r.reason && r.reason.message === "SISTEMA_FECHADO"
+  );
+  if (fechado) throw fechado.reason;
 }
 
 async function dormirAteAbertura() {
@@ -539,6 +798,18 @@ async function runPollingLoop() {
   }
 
   const { MODO_TESTE } = await chrome.storage.local.get(["MODO_TESTE"]);
+
+  // Turnstile interativo — robô pausado até cliente resolver no portal (ou expirar)
+  const sessTs = await chrome.storage.session.get(["turnstileBloqueado", "turnstileBloqueadoAte"]);
+  if (sessTs.turnstileBloqueado && sessTs.turnstileBloqueadoAte && Date.now() < sessTs.turnstileBloqueadoAte) {
+    const restanteMs = sessTs.turnstileBloqueadoAte - Date.now();
+    setTimeout(runPollingLoop, Math.min(restanteMs, MAX_SETTIMEOUT_MS));
+    return;
+  }
+  if (sessTs.turnstileBloqueado) {
+    await chrome.storage.session.set({ turnstileBloqueado: false, turnstileBloqueadoAte: null });
+    notificarPopup(`✅ Pausa por Turnstile encerrada. Retomando.`);
+  }
 
   // Circuit breaker — verifica antes de qualquer request
   const sessCb = await chrome.storage.session.get(["circuitAberto"]);
@@ -659,6 +930,8 @@ async function pararMonitoramento() {
   await chrome.alarms.clear(alarmName);
   await chrome.storage.local.remove(["idUsuario", "idEmpresa"]);
   notificarPopup("⏹ Monitoramento parado");
+  telemetria("sw.lifecycle", { event: "stopped" });
+  await flushTelemetria();
 }
 
 // Alarm como fallback: reativa loop se SW foi encerrado pelo browser.
@@ -671,7 +944,18 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   runPollingLoop();
 });
 
+async function handleTurnstileChallenge() {
+  const ate = Date.now() + TURNSTILE_BLOQUEIO_MS;
+  await chrome.storage.session.set({ turnstileBloqueado: true, turnstileBloqueadoAte: ate });
+  const msg = `🚨 Turnstile pediu interação manual — resolva no portal em ${TURNSTILE_BLOQUEIO_MS/1000}s. Robô pausado.`;
+  notificarPopup(msg);
+  telemetria("turnstile.detected_interactive", { bloqueioMs: TURNSTILE_BLOQUEIO_MS });
+  await telegramNotify(msg);
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || !message.action) return false;
+
   if (message.action === "start") {
     iniciarMonitoramento()
       .then(() => sendResponse({ ok: true }))
@@ -680,6 +964,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message.action === "stop") {
     pararMonitoramento()
+      .then(() => sendResponse({ ok: true }))
+      .catch(e => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+  if (message.action === "turnstile_challenge") {
+    handleTurnstileChallenge()
+      .then(() => sendResponse({ ok: true }))
+      .catch(e => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+  if (message.action === "telemetria") {
+    telemetria(message.tipo || "unknown", message.dados || {})
+      .then(() => sendResponse({ ok: true }))
+      .catch(e => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+  if (message.action === "clear_telemetria_buffer") {
+    TELEMETRIA_BATCH.length = 0;
+    if (TELEMETRIA_FLUSH_TIMER) { clearTimeout(TELEMETRIA_FLUSH_TIMER); TELEMETRIA_FLUSH_TIMER = null; }
+    chrome.storage.local.set({ telemetria_buffer: [] })
+      .then(() => sendResponse({ ok: true }))
+      .catch(e => sendResponse({ ok: false, error: e.message }));
+    return true;
+  }
+  if (message.action === "flush_telemetria") {
+    flushTelemetria()
       .then(() => sendResponse({ ok: true }))
       .catch(e => sendResponse({ ok: false, error: e.message }));
     return true;
@@ -709,7 +1019,13 @@ if (typeof module !== "undefined") {
     brasilNowParts,
     fazerLogin,
     reservarComLimite,
+    reservarViaTab,
     runMonitorCycle,
+    runPollingLoop,
+    handleTurnstileChallenge,
+    sanitize,
+    telemetria,
+    flushTelemetria,
     telegramNotify,
     sleep,
     BUCKET_CAPACITY,
@@ -719,6 +1035,12 @@ if (typeof module !== "undefined") {
     CIRCUIT_OPEN_MS,
     FLOOR_DELAY_MIN,
     FLOOR_DELAY_MAX,
+    TURNSTILE_BLOQUEIO_MS,
+    TURNSTILE_COOLDOWN_MS,
+    TELEMETRIA_MAX_ENTRIES,
+    TELEMETRIA_BATCH_MAX,
+    TELEMETRIA_FLUSH_MS,
+    TELEMETRIA_BODY_TRUNC,
     agendarProximoCiclo
   };
 }
