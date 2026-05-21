@@ -1,22 +1,139 @@
 <!DOCTYPE html>
-<html>
+<html lang="pt-BR">
 <head>
   <meta charset="UTF-8">
   <title>Canopus Robô</title>
-  <style>
-    body { width: 380px; padding: 15px; font-family: Arial, sans-serif; }
-    h1 { font-size: 18px; margin-top: 0; }
-    button { padding: 10px 20px; margin: 5px; width: 100%; }
-    #logs { height: 300px; overflow-y: auto; background: #f4f4f4; padding: 10px; font-size: 13px; white-space: pre-wrap; }
-  </style>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
+  <link rel="stylesheet" href="popup.css">
+  <link rel="stylesheet" href="popup-base.css">
 </head>
 <body>
-  <h1>🚀 Canopus Reserva Robô</h1>
-  <button id="startBtn">▶️ Iniciar Monitoramento</button>
-  <button id="stopBtn">⏹️ Parar</button>
-  <div id="status">Status: Parado</div>
-  <h3>Logs em tempo real:</h3>
-  <div id="logs"></div>
+
+  <!-- Header -->
+  <header class="app-header">
+    <span class="app-title">Canopus Robô</span>
+    <span class="status-pill" id="statusBadge">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">Parado</span>
+    </span>
+  </header>
+
+  <!-- Scrollable main -->
+  <div class="main-scroll">
+
+    <!-- Action buttons -->
+    <div class="btn-row">
+      <button class="btn btn-start" id="startBtn">
+        <span class="material-symbols-outlined icon-sm">play_arrow</span>
+        Iniciar Robô
+      </button>
+      <button class="btn btn-stop" id="stopBtn" disabled>
+        <span class="material-symbols-outlined icon-sm">stop</span>
+        Parar
+      </button>
+    </div>
+
+    <!-- Test mode toggle -->
+    <div class="toggle-row">
+      <div>
+        <div class="toggle-label">Modo Teste</div>
+        <div class="toggle-sub">Monitora sem reservar</div>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="modoTeste">
+        <span class="slider"></span>
+      </label>
+    </div>
+
+    <!-- Config card -->
+    <div class="card" data-collapsible>
+      <button class="card-header" type="button" aria-expanded="false">
+        <span class="material-symbols-outlined">manage_accounts</span>
+        <span class="card-title">Configurações</span>
+        <span class="material-symbols-outlined card-chevron">expand_more</span>
+      </button>
+      <div class="card-body">
+        <div class="card-body-inner">
+
+          <div class="field">
+            <label>Usuário Canopus</label>
+            <input type="text" id="usuario" placeholder="Código do usuário">
+          </div>
+
+          <div class="field">
+            <label>Senha Canopus</label>
+            <input type="password" id="senha" placeholder="Senha">
+          </div>
+
+          <div class="field">
+            <label>Grupos monitorados</label>
+            <input type="text" id="grupos" placeholder="009113:3,009114:2">
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label>Delay mín. (s)</label>
+              <input type="number" id="delayMin" placeholder="1.0" step="0.5" min="0.5">
+            </div>
+            <div class="field">
+              <label>Delay máx. (s)</label>
+              <input type="number" id="delayMax" placeholder="3.0" step="0.5" min="1">
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- Telegram card -->
+    <div class="card" data-collapsible>
+      <button class="card-header" type="button" aria-expanded="false">
+        <span class="material-symbols-outlined">send</span>
+        <span class="card-title">Telegram</span>
+        <span class="material-symbols-outlined card-chevron">expand_more</span>
+      </button>
+      <div class="card-body">
+        <div class="card-body-inner">
+
+          <div class="field">
+            <label>Bot Token</label>
+            <input type="password" id="telegramToken" placeholder="123456:ABC-DEF...">
+          </div>
+
+          <div class="field">
+            <label>Chat ID</label>
+            <input type="text" id="telegramChatId" placeholder="-100123456789">
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <!-- Save button -->
+    <button class="btn-save" id="saveBtn">
+      <span class="material-symbols-outlined icon-sm">save</span>
+      Salvar Configurações
+    </button>
+
+    <!-- Logs -->
+    <div class="logs-card">
+      <div class="logs-header">
+        <span class="logs-title">
+          <span class="material-symbols-outlined">terminal</span>
+          Logs ao vivo
+        </span>
+        <button class="btn-clear" id="clearBtn">
+          <span class="material-symbols-outlined">delete_sweep</span>
+          Limpar
+        </button>
+      </div>
+      <div id="logs"></div>
+    </div>
+
+  </div>
 
   <script src="popup.js"></script>
 </body>
