@@ -3,7 +3,7 @@ html, body {
   overflow: hidden;
 }
 body {
-  width: 380px;
+  width: 100%;
   min-width: 320px;
   display: flex;
   flex-direction: column;

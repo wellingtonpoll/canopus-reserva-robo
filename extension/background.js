@@ -1,12 +1,81 @@
 const BASE_URL = "https://prod-api-portalparceiro-canopus.bsn.dev.br";
 const ORIGIN_URL = "https://parceiros.consorciocanopus.com.br";
 const alarmName = "canopusMonitor";
-const MAX_TENTATIVAS = 4;
-const RATE_LIMIT_BACKOFF_FACTOR = 2.0;   // AIMD multiplicative increase
-const SUCCESS_DECAY_FACTOR = 0.9;        // AIMD multiplicative decrease (gentle)
-const MAX_DYNAMIC_DELAY = 60;            // ceiling em segundos
+const MAX_TENTATIVAS_NET = 4;             // retries só pra erros de rede
+const RATE_LIMIT_BACKOFF_FACTOR = 2.0;    // AIMD multiplicative increase
+const SUCCESS_DECAY_FACTOR = 0.9;         // AIMD multiplicative decrease (gentle)
+const MAX_DYNAMIC_DELAY = 60;             // ceiling em segundos
+
+// Token bucket — prevenção dura de taxa de saída
+const BUCKET_CAPACITY       = 3;          // burst inicial mínimo
+const BUCKET_REFILL_PER_SEC = 0.15;       // 1 token a cada ~7s, ~9 req/min sustentado
+
+// Circuit breaker
+const CIRCUIT_HITS_THRESHOLD = 2;         // 2 hits em janela → abre
+const CIRCUIT_WINDOW_MS      = 60_000;    // janela de 60s
+const CIRCUIT_OPEN_MS        = 10 * 60_000; // pausa de 10min
+
+// Backoff longo em rate limit no runPollingLoop
+const RATE_LIMIT_BACKOFF_SEC          = 60;
+const CLOUDFLARE_1015_BACKOFF_SEC     = 120;
+
+// Smart idle
+const IDLE_INCREMENT     = 0.3;           // 30% a mais por ciclo vazio
+const IDLE_MAX_CICLOS    = 5;             // cap em 5 ciclos vazios
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function tomarToken() {
+  const sess = await chrome.storage.session.get(["bucket"]);
+  let tokens     = (sess.bucket && sess.bucket.tokens     != null) ? Number(sess.bucket.tokens)     : BUCKET_CAPACITY;
+  let lastRefill = (sess.bucket && sess.bucket.lastRefill != null) ? Number(sess.bucket.lastRefill) : Date.now();
+
+  const now = Date.now();
+  const elapsedSec = Math.max(0, (now - lastRefill) / 1000);
+  tokens = Math.min(BUCKET_CAPACITY, tokens + elapsedSec * BUCKET_REFILL_PER_SEC);
+  lastRefill = now;
+
+  if (tokens < 1) {
+    const waitSec = (1 - tokens) / BUCKET_REFILL_PER_SEC;
+    notificarPopup(`⏱️ Token bucket vazio — aguardando ${waitSec.toFixed(1)}s`);
+    await sleep(waitSec * 1000);
+    tokens = 1;
+    lastRefill = Date.now();
+  }
+
+  tokens -= 1;
+  await chrome.storage.session.set({ bucket: { tokens, lastRefill } });
+}
+
+async function registrarHitERateLimit() {
+  const sess = await chrome.storage.session.get(["hitsRecentes", "circuitAberto"]);
+  if (sess.circuitAberto && Date.now() < sess.circuitAberto) {
+    // Já estamos com circuito aberto; só marca rateLimitHit
+    await chrome.storage.session.set({ rateLimitHit: true });
+    return { circuitOpen: true };
+  }
+
+  const agora = Date.now();
+  const recentes = (Array.isArray(sess.hitsRecentes) ? sess.hitsRecentes : [])
+    .filter(t => agora - t < CIRCUIT_WINDOW_MS);
+  recentes.push(agora);
+
+  if (recentes.length >= CIRCUIT_HITS_THRESHOLD) {
+    const ate = agora + CIRCUIT_OPEN_MS;
+    await chrome.storage.session.set({
+      hitsRecentes: [],
+      circuitAberto: ate,
+      rateLimitHit: true
+    });
+    const msg = `🛑 Circuit breaker aberto — ${CIRCUIT_HITS_THRESHOLD} hits em ${CIRCUIT_WINDOW_MS/1000}s. Pausando ${CIRCUIT_OPEN_MS/60000}min`;
+    notificarPopup(msg);
+    await telegramNotify(msg);
+    return { circuitOpen: true };
+  }
+
+  await chrome.storage.session.set({ hitsRecentes: recentes, rateLimitHit: true });
+  return { circuitOpen: false };
+}
 
 function getHeaders() {
   return {
@@ -29,7 +98,8 @@ function parseRetryAfter(header) {
   return 0;
 }
 
-async function apiPost(path, body, tentativa = 0) {
+async function apiPost(path, body, tentativaNet = 0) {
+  await tomarToken();
   const headers = getHeaders();
   let resp;
   try {
@@ -39,33 +109,37 @@ async function apiPost(path, body, tentativa = 0) {
       body: JSON.stringify(body)
     });
   } catch (netErr) {
-    if (tentativa < MAX_TENTATIVAS) {
+    if (tentativaNet < MAX_TENTATIVAS_NET) {
       const wait = 5000 + Math.random() * 10000;
       notificarPopup(`⚠️ Erro de rede. Aguardando ${(wait / 1000).toFixed(0)}s...`);
       await sleep(wait);
-      return apiPost(path, body, tentativa + 1);
+      return apiPost(path, body, tentativaNet + 1);
     }
     throw netErr;
   }
 
   if (resp.status === 429 || resp.status === 403) {
-    // Sinaliza hit pro AIMD ajustar delay no fim do ciclo
-    await chrome.storage.session.set({ rateLimitHit: true });
+    const retryAfterHeader = resp.headers && typeof resp.headers.get === "function"
+      ? resp.headers.get("retry-after")
+      : null;
+    const retryAfterSec = parseRetryAfter(retryAfterHeader);
+    let bodyText = "";
+    try {
+      if (resp && typeof resp.clone === "function") {
+        bodyText = await resp.clone().text();
+      } else if (resp && typeof resp.text === "function") {
+        bodyText = await resp.text();
+      }
+    } catch (_) { /* corpo ilegível — segue sem detecção 1015 */ }
+    const cloudflare1015 = /1015|rate.?limited/i.test(bodyText);
 
-    if (tentativa < MAX_TENTATIVAS) {
-      const retryAfterHeader = resp.headers && typeof resp.headers.get === "function"
-        ? resp.headers.get("retry-after")
-        : null;
-      const retryAfterSec = parseRetryAfter(retryAfterHeader);
-      const wait = retryAfterSec > 0
-        ? retryAfterSec * 1000
-        : 5000 + Math.random() * 10000;
-      const fonte = retryAfterSec > 0 ? " (Retry-After)" : "";
-      notificarPopup(`⚠️ Rate limit (${resp.status})${fonte}. Aguardando ${(wait / 1000).toFixed(0)}s...`);
-      await sleep(wait);
-      return apiPost(path, body, tentativa + 1);
-    }
-    throw new Error(`Rate limit persistente: HTTP ${resp.status}`);
+    await registrarHitERateLimit();
+
+    const err = new Error("RATE_LIMIT");
+    err.status = resp.status;
+    err.retryAfterSec = retryAfterSec;
+    err.cloudflare1015 = cloudflare1015;
+    throw err;
   }
 
   if (!resp.ok) throw new Error(`HTTP ${resp.status} em ${path}`);
@@ -73,7 +147,7 @@ async function apiPost(path, body, tentativa = 0) {
 }
 
 async function ajustarDelayDinamico() {
-  const { DELAY_MIN = 1, DELAY_MAX = 3 } = await chrome.storage.local.get(["DELAY_MIN", "DELAY_MAX"]);
+  const { DELAY_MIN = 5, DELAY_MAX = 10 } = await chrome.storage.local.get(["DELAY_MIN", "DELAY_MAX"]);
   const floorMin = Number(DELAY_MIN);
   const floorMax = Number(DELAY_MAX);
 
@@ -406,8 +480,14 @@ async function runMonitorCycle() {
 
   if (detectados.length === 0) {
     notificarPopup(`💥 Nenhuma cota disponível no momento...`);
+    const sessIdle = await chrome.storage.session.get(["ciclosVazios"]);
+    const novosVazios = Math.min(Number(sessIdle.ciclosVazios || 0) + 1, IDLE_MAX_CICLOS);
+    await chrome.storage.session.set({ ciclosVazios: novosVazios });
     return;
   }
+
+  // Vagas detectadas → reset idle counter
+  await chrome.storage.session.set({ ciclosVazios: 0 });
 
   const lista = Object.keys(gruposAlvo).sort().join(", ");
   notificarPopup(`🔍 Buscando por cotas: ${lista}...`);
@@ -441,6 +521,19 @@ async function runPollingLoop() {
 
   const { MODO_TESTE } = await chrome.storage.local.get(["MODO_TESTE"]);
 
+  // Circuit breaker — verifica antes de qualquer request
+  const sessCb = await chrome.storage.session.get(["circuitAberto"]);
+  if (sessCb.circuitAberto && Date.now() < sessCb.circuitAberto) {
+    const restanteMs = sessCb.circuitAberto - Date.now();
+    notificarPopup(`🛑 Circuit breaker aberto. Próxima tentativa em ${(restanteMs/1000).toFixed(0)}s`);
+    setTimeout(runPollingLoop, Math.min(restanteMs, 60_000));
+    return;
+  }
+  if (sessCb.circuitAberto && Date.now() >= sessCb.circuitAberto) {
+    await chrome.storage.session.set({ circuitAberto: null, hitsRecentes: [] });
+    notificarPopup(`✅ Circuit breaker fechado. Retomando.`);
+  }
+
   // Horário comercial — bypass em modo teste pra permitir validação a qualquer hora
   if (!MODO_TESTE && !sistemaEstaAberto()) {
     await dormirAteAbertura();
@@ -463,9 +556,20 @@ async function runPollingLoop() {
     await runMonitorCycle();
   } catch (error) {
     if (error.message === "SISTEMA_FECHADO") {
-      // API indicou sistema fechado mid-cycle — força sleep até abertura
       await chrome.storage.session.set({ sistemaFechadoLogged: false });
       await dormirAteAbertura();
+      return;
+    }
+
+    if (error.message === "RATE_LIMIT") {
+      const baseWait = error.cloudflare1015
+        ? CLOUDFLARE_1015_BACKOFF_SEC
+        : Math.max(error.retryAfterSec || 0, RATE_LIMIT_BACKOFF_SEC);
+      const fonte = error.cloudflare1015 ? "🔥 Cloudflare 1015" : `⛔ Rate limit (HTTP ${error.status || 429})`;
+      const msg = `${fonte} — pausando ${baseWait}s antes de retry`;
+      notificarPopup(msg);
+      await telegramNotify(msg);
+      setTimeout(runPollingLoop, baseWait * 1000);
       return;
     }
 
@@ -479,19 +583,35 @@ async function runPollingLoop() {
   }
 
   const { currentMin, currentMax } = await ajustarDelayDinamico();
-  const delay = currentMin + Math.random() * Math.max(0, currentMax - currentMin);
+
+  // Smart idle multiplier
+  const { ciclosVazios = 0 } = await chrome.storage.session.get(["ciclosVazios"]);
+  const idleMultiplier = 1 + IDLE_INCREMENT * Math.min(Number(ciclosVazios), IDLE_MAX_CICLOS);
+
+  // Jitter triangular (bias suave pro centro do intervalo)
+  const u = Math.random();
+  const triangular = u < 0.5
+    ? Math.sqrt(u * 0.5)
+    : 1 - Math.sqrt((1 - u) * 0.5);
+  const baseDelay = currentMin + triangular * Math.max(0, currentMax - currentMin);
+  const delay = baseDelay * idleMultiplier;
+
   setTimeout(runPollingLoop, delay * 1000);
 }
 
 async function iniciarMonitoramento() {
-  const { DELAY_MIN = 1, DELAY_MAX = 3 } = await chrome.storage.local.get(["DELAY_MIN", "DELAY_MAX"]);
+  const { DELAY_MIN = 5, DELAY_MAX = 10 } = await chrome.storage.local.get(["DELAY_MIN", "DELAY_MAX"]);
   await chrome.storage.session.set({
     isRunning: true,
     rateLimitHit: false,
     sistemaFechadoLogged: false,
     produtosBloqueados: [],
     currentMin: Number(DELAY_MIN),
-    currentMax: Number(DELAY_MAX)
+    currentMax: Number(DELAY_MAX),
+    bucket: { tokens: BUCKET_CAPACITY, lastRefill: Date.now() },
+    hitsRecentes: [],
+    circuitAberto: null,
+    ciclosVazios: 0
   });
   await chrome.alarms.create(alarmName, { periodInMinutes: 1 });
   runPollingLoop();
@@ -544,6 +664,8 @@ if (typeof module !== "undefined") {
     apiPost,
     parseRetryAfter,
     ajustarDelayDinamico,
+    tomarToken,
+    registrarHitERateLimit,
     extrairGrupos,
     extrairReserva,
     formatarDataBR,
@@ -555,6 +677,11 @@ if (typeof module !== "undefined") {
     reservarComLimite,
     runMonitorCycle,
     telegramNotify,
-    sleep
+    sleep,
+    BUCKET_CAPACITY,
+    BUCKET_REFILL_PER_SEC,
+    CIRCUIT_HITS_THRESHOLD,
+    CIRCUIT_WINDOW_MS,
+    CIRCUIT_OPEN_MS
   };
 }

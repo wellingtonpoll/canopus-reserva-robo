@@ -112,27 +112,16 @@ describe("apiPost", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  test("retenta em 429 e resolve na segunda tentativa", async () => {
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce({ ok: false, status: 429 })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ success: true }) });
-    const result = await apiPost("/test", {});
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(result.success).toBe(true);
-  });
-
-  test("retenta em 403 (Cloudflare)", async () => {
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce({ ok: false, status: 403 })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ ok: true }) });
-    await apiPost("/test", {});
-    expect(fetch).toHaveBeenCalledTimes(2);
-  });
-
-  test("lança Rate limit persistente após MAX_TENTATIVAS (5 calls)", async () => {
+  test("429 → lança RATE_LIMIT (sem retry)", async () => {
     global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 429 });
-    await expect(apiPost("/test", {})).rejects.toThrow("Rate limit persistente");
-    expect(fetch).toHaveBeenCalledTimes(5); // tentativas 0..4
+    await expect(apiPost("/test", {})).rejects.toMatchObject({ message: "RATE_LIMIT", status: 429 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test("403 (Cloudflare) → lança RATE_LIMIT (sem retry)", async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 403 });
+    await expect(apiPost("/test", {})).rejects.toMatchObject({ message: "RATE_LIMIT", status: 403 });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   test("não retenta em erros HTTP 4xx diferentes de 429/403", async () => {
@@ -149,21 +138,33 @@ describe("apiPost", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  test("lança após MAX_TENTATIVAS de erro de rede", async () => {
+  test("lança após MAX_TENTATIVAS_NET de erro de rede", async () => {
     global.fetch = jest.fn().mockRejectedValue(new TypeError("Network failed"));
     await expect(apiPost("/test", {})).rejects.toThrow("Network failed");
     expect(fetch).toHaveBeenCalledTimes(5);
   });
 
-  test("rate limit em 3a tentativa ainda recupera", async () => {
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce({ ok: false, status: 429 })
-      .mockResolvedValueOnce({ ok: false, status: 429 })
-      .mockResolvedValueOnce({ ok: false, status: 429 })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ ok: true }) });
-    const result = await apiPost("/test", {});
-    expect(fetch).toHaveBeenCalledTimes(4);
-    expect(result.ok).toBe(true);
+  test("body com 1015 → RATE_LIMIT.cloudflare1015 = true", async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false, status: 429,
+      headers: { get: () => null },
+      clone: function() { return { text: async () => "Cloudflare error 1015 — rate limited" }; }
+    });
+    await expect(apiPost("/test", {})).rejects.toMatchObject({
+      message: "RATE_LIMIT",
+      cloudflare1015: true
+    });
+  });
+
+  test("Retry-After numérico passa pro erro como retryAfterSec", async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false, status: 429,
+      headers: { get: (h) => h.toLowerCase() === "retry-after" ? "45" : null }
+    });
+    await expect(apiPost("/test", {})).rejects.toMatchObject({
+      message: "RATE_LIMIT",
+      retryAfterSec: 45
+    });
   });
 });
 
@@ -317,25 +318,12 @@ describe("reservarComLimite", () => {
     expect(gruposConfigSet).toBeUndefined();
   });
 
-  test("rate limit em /reservas/add — retenta e reserva", async () => {
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce({ ok: false, status: 429 })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ success: true }) });
-    const reservasPorGrupo = {};
-    await reservarComLimite(mockGrupo, 99, 1, "009113", 3, reservasPorGrupo, false);
-    expect(fetch).toHaveBeenCalledTimes(2);
-    expect(chrome.storage.local.set).toHaveBeenCalledWith(
-      expect.objectContaining({ reservasPorGrupo: { "009113": 1 } })
-    );
-  });
-
-  test("rate limit persistente em /reservas/add — lança sem corromper contador", async () => {
+  test("rate limit em /reservas/add — lança RATE_LIMIT sem corromper contador", async () => {
     global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 429 });
     const reservasPorGrupo = {};
     await expect(
       reservarComLimite(mockGrupo, 99, 1, "009113", 3, reservasPorGrupo, false)
-    ).rejects.toThrow("Rate limit persistente");
-    // Contador NÃO incrementou — reserva não foi confirmada
+    ).rejects.toMatchObject({ message: "RATE_LIMIT" });
     const counterSet = chrome.storage.local.set.mock.calls.find(c => c[0].reservasPorGrupo);
     expect(counterSet).toBeUndefined();
   });
@@ -466,13 +454,11 @@ describe("runMonitorCycle", () => {
     await expect(runMonitorCycle()).resolves.toBeUndefined();
   });
 
-  test("rate limit em buscarGrupos — retenta e completa ciclo", async () => {
-    storageWith({ GRUPOS_CONFIG: "009999:3" }); // grupo fora do config para garantir só 2 fetches
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce({ ok: false, status: 429 })
-      .mockResolvedValueOnce(fetchGruposOk([mockGrupo]));
-    await expect(runMonitorCycle()).resolves.toBeUndefined();
-    expect(fetch).toHaveBeenCalledTimes(2);
+  test("rate limit em buscarGrupos — lança RATE_LIMIT (sem retry interno)", async () => {
+    storageWith();
+    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 429 });
+    await expect(runMonitorCycle()).rejects.toMatchObject({ message: "RATE_LIMIT" });
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   test("sem idUsuario — faz login antes de consultar grupos", async () => {
@@ -870,70 +856,108 @@ describe("parseRetryAfter", () => {
   });
 });
 
-// ─── apiPost honra Retry-After + sinaliza rateLimitHit ──────────────────────
+// ─── Circuit breaker ────────────────────────────────────────────────────────
 
-describe("apiPost — Retry-After + AIMD signal", () => {
+describe("registrarHitERateLimit (circuit breaker)", () => {
+  const { registrarHitERateLimit, CIRCUIT_HITS_THRESHOLD } = require('../background.js');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    chrome.storage.local.get.mockResolvedValue({});
+    chrome.storage.session.get.mockResolvedValue({});
+  });
+
+  test("1 hit isolado — não abre circuito, seta rateLimitHit", async () => {
+    chrome.storage.session.get.mockResolvedValue({ hitsRecentes: [] });
+    const out = await registrarHitERateLimit();
+    expect(out.circuitOpen).toBe(false);
+    expect(chrome.storage.session.set).toHaveBeenCalledWith(
+      expect.objectContaining({ rateLimitHit: true })
+    );
+  });
+
+  test("2 hits em 60s — abre circuito por 10min", async () => {
+    const agora = Date.now();
+    chrome.storage.session.get.mockResolvedValue({
+      hitsRecentes: [agora - 5000]
+    });
+    const out = await registrarHitERateLimit();
+    expect(out.circuitOpen).toBe(true);
+    const setCalls = chrome.storage.session.set.mock.calls;
+    const cbCall = setCalls.find(c => c[0].circuitAberto != null);
+    expect(cbCall).toBeDefined();
+    expect(cbCall[0].circuitAberto).toBeGreaterThan(Date.now() + 9 * 60_000);
+  });
+
+  test("hits antigos (>60s) são filtrados", async () => {
+    const antigo = Date.now() - 120_000;
+    chrome.storage.session.get.mockResolvedValue({
+      hitsRecentes: [antigo]
+    });
+    const out = await registrarHitERateLimit();
+    expect(out.circuitOpen).toBe(false);  // antigo descartado, agora só 1 recente
+  });
+
+  test("circuito já aberto — não re-abre, só marca rateLimitHit", async () => {
+    chrome.storage.session.get.mockResolvedValue({
+      circuitAberto: Date.now() + 60_000
+    });
+    const out = await registrarHitERateLimit();
+    expect(out.circuitOpen).toBe(true);
+    // Não deveria sobrescrever circuitAberto
+    const setCalls = chrome.storage.session.set.mock.calls;
+    const overwriteCb = setCalls.find(c => c[0].circuitAberto != null);
+    expect(overwriteCb).toBeUndefined();
+  });
+});
+
+// ─── Token bucket ───────────────────────────────────────────────────────────
+
+describe("tomarToken", () => {
+  const { tomarToken, BUCKET_CAPACITY, BUCKET_REFILL_PER_SEC } = require('../background.js');
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockSleep();
-    chrome.storage.local.get.mockResolvedValue({});
   });
   afterEach(() => jest.restoreAllMocks());
 
-  function rateLimitResp(retryAfterHeader) {
-    return {
-      ok: false,
-      status: 429,
-      headers: { get: (n) => (n.toLowerCase() === "retry-after" ? retryAfterHeader : null) }
-    };
-  }
-
-  test("seta rateLimitHit em storage.session ao receber 429", async () => {
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce(rateLimitResp(null))
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: "ok" }) });
-    await apiPost("/foo", {});
-    expect(chrome.storage.session.set).toHaveBeenCalledWith(
-      expect.objectContaining({ rateLimitHit: true })
-    );
+  test("bucket cheio — consome 1 token sem aguardar", async () => {
+    chrome.storage.session.get.mockResolvedValue({
+      bucket: { tokens: BUCKET_CAPACITY, lastRefill: Date.now() }
+    });
+    await tomarToken();
+    const setCall = chrome.storage.session.set.mock.calls.find(c => c[0].bucket);
+    expect(setCall[0].bucket.tokens).toBeCloseTo(BUCKET_CAPACITY - 1, 1);
   });
 
-  test("honra Retry-After numérico — sleep usa o valor do header", async () => {
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce(rateLimitResp("30"))
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: "ok" }) });
-    await apiPost("/foo", {});
-    // setTimeout foi chamado com 30000ms (Retry-After=30s)
-    expect(setTimeout).toHaveBeenCalledWith(expect.any(Function), 30000);
+  test("bucket vazio — aguarda refill antes de consumir", async () => {
+    chrome.storage.session.get.mockResolvedValue({
+      bucket: { tokens: 0, lastRefill: Date.now() }
+    });
+    await tomarToken();
+    // Algum setTimeout grande foi chamado (refill wait)
+    const waitCall = setTimeout.mock.calls.find(c => c[1] >= 1000);
+    expect(waitCall).toBeDefined();
   });
 
-  test("sem Retry-After — usa backoff aleatório 5-15s", async () => {
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce(rateLimitResp(null))
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: "ok" }) });
-    await apiPost("/foo", {});
-    const sleepCall = setTimeout.mock.calls.find(c => c[1] >= 5000 && c[1] <= 15000);
-    expect(sleepCall).toBeDefined();
+  test("refilll proporcional ao tempo decorrido", async () => {
+    const t0 = Date.now() - 10_000; // 10s atrás
+    chrome.storage.session.get.mockResolvedValue({
+      bucket: { tokens: 0, lastRefill: t0 }
+    });
+    await tomarToken();
+    const setCall = chrome.storage.session.set.mock.calls.find(c => c[0].bucket);
+    // 10s × 0.15 = 1.5 tokens. Consome 1 → fica ~0.5
+    expect(setCall[0].bucket.tokens).toBeGreaterThanOrEqual(0);
+    expect(setCall[0].bucket.tokens).toBeLessThanOrEqual(1);
   });
 
-  test("403 também seta rateLimitHit", async () => {
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce({
-        ok: false, status: 403,
-        headers: { get: () => null }
-      })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: "ok" }) });
-    await apiPost("/foo", {});
-    expect(chrome.storage.session.set).toHaveBeenCalledWith(
-      expect.objectContaining({ rateLimitHit: true })
-    );
-  });
-
-  test("response sem headers — não quebra, usa backoff aleatório", async () => {
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce({ ok: false, status: 429 })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ data: "ok" }) });
-    await expect(apiPost("/foo", {})).resolves.toEqual({ data: "ok" });
+  test("primeiro uso (sem state) — começa com BUCKET_CAPACITY", async () => {
+    chrome.storage.session.get.mockResolvedValue({});
+    await tomarToken();
+    const setCall = chrome.storage.session.set.mock.calls.find(c => c[0].bucket);
+    expect(setCall[0].bucket.tokens).toBeCloseTo(BUCKET_CAPACITY - 1, 1);
   });
 });
 
