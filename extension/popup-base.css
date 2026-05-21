@@ -23,6 +23,24 @@ body {
   background: #fff;
   border-bottom: 1px solid #e4e2e2;
 }
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.header-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #ffd700;
+  border: 1px solid #d0c6ab;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #705e00;
+  flex-shrink: 0;
+}
+.header-avatar .material-symbols-outlined { font-size: 18px; }
 .app-title {
   font-family: 'Hanken Grotesk', sans-serif;
   font-size: 17px;
@@ -64,6 +82,84 @@ body {
   50% { box-shadow: 0 0 0 5px rgba(76, 175, 80, 0); }
 }
 
+/* ─── Tab navigation ──────────────────────────────────────────────────────── */
+.tab-nav {
+  flex-shrink: 0;
+  display: flex;
+  background: #fff;
+  border-bottom: 1px solid #e4e2e2;
+  padding: 0 8px;
+  gap: 4px;
+}
+.tab-btn {
+  flex: 1;
+  background: none;
+  border: none;
+  padding: 10px 8px;
+  cursor: pointer;
+  font-family: 'Hanken Grotesk', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: #7e775f;
+  letter-spacing: 0.3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border-bottom: 2px solid transparent;
+  transition: color 0.2s, border-color 0.2s, background 0.2s;
+  border-radius: 0;
+}
+.tab-btn .material-symbols-outlined { font-size: 16px; }
+.tab-btn:hover { color: #4d4732; background: #f5f3f3; }
+.tab-btn[aria-selected="true"] {
+  color: #705d00;
+  border-bottom-color: #ffd700;
+}
+
+/* Tab content show/hide via body[data-tab] — esconde todas, mostra só a ativa */
+[data-tab-content] {
+  display: none;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+}
+body[data-tab="operacoes"] [data-tab-content="operacoes"],
+body[data-tab="historico"] [data-tab-content="historico"],
+body[data-tab="config"]    [data-tab-content="config"] {
+  display: flex;
+}
+
+/* Fix 10: Tab Operações fill viewport sem scroll — logs encolhe quando dashboard expande */
+[data-tab-content="operacoes"] {
+  overflow: hidden;
+}
+[data-tab-content="operacoes"] .logs-card {
+  flex: 1 1 auto;
+  min-height: 100px;
+}
+[data-tab-content="operacoes"] .dashboard-panel {
+  flex-shrink: 0;
+}
+
+/* Fix 12: Tab Configurações fill viewport — card-fullpage cresce, save é footer
+   interno do card (não da viewport) */
+[data-tab-content="config"] {
+  overflow: hidden;
+  gap: 0;
+}
+[data-tab-content="config"] .card-fullpage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+[data-tab-content="config"] .card-fullpage .card-body-inner {
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+
 /* Main scroll area */
 .main-scroll {
   flex: 1;
@@ -83,7 +179,115 @@ body {
 .main-scroll > .toggle-row,
 .main-scroll > .standalone-field,
 .main-scroll > .card,
+.main-scroll > .card-operacoes,
 .main-scroll > .btn-save { flex-shrink: 0; }
+
+/* ─── Card Operações (D9+D2+D1+D3) ─────────────────────────────────────────── */
+.card-operacoes {
+  background: #fff;
+  border: 1px solid #e4e2e2;
+  border-radius: 1rem;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.card-operacoes-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.card-operacoes-title {
+  font-family: 'Hanken Grotesk', sans-serif;
+  font-size: 18px;
+  font-weight: 700;
+  color: #1b1c1c;
+  margin: 0;
+  letter-spacing: -0.01em;
+}
+.status-pill-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 8px;
+  border-radius: 9999px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.5px;
+  background: #f5f3f3;
+  color: #7e775f;
+  transition: background 0.3s, color 0.3s;
+}
+.status-pill-inline.running {
+  background: rgba(255, 215, 0, 0.18);
+  color: #705d00;
+}
+.status-dot-inline {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #b0a68a;
+  flex-shrink: 0;
+  transition: background 0.3s;
+}
+.status-dot-inline.active {
+  background: #ffd700;
+  animation: pulse-yellow-dot 1.5s infinite;
+}
+@keyframes pulse-yellow-dot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 215, 0, 0.55); }
+  50%      { box-shadow: 0 0 0 5px rgba(255, 215, 0, 0); }
+}
+
+/* Botões Iniciar/Parar — verticais compactos (Fix 10: padding reduzido) */
+.btn-xl-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.btn-xl {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 8px;
+  border-radius: 0.75rem;
+  cursor: pointer;
+  font-family: 'Hanken Grotesk', sans-serif;
+  font-weight: 700;
+  letter-spacing: 1px;
+  transition: filter 0.2s, transform 0.1s, box-shadow 0.2s, background 0.2s;
+  border: 1px solid transparent;
+}
+.btn-xl:disabled { opacity: 0.38; cursor: not-allowed; }
+.btn-xl:not(:disabled):active { transform: scale(0.97); }
+.btn-xl-icon { font-size: 22px; line-height: 1; }
+.btn-xl-label { font-size: 12px; }
+
+.btn-xl-start {
+  background: #ffd700;
+  color: #3a2f00;
+  border-color: #e9c400;
+}
+.btn-xl-start:not(:disabled):hover { filter: brightness(0.96); box-shadow: 0 2px 12px rgba(112,93,0,0.18); }
+
+.btn-xl-stop {
+  background: #fff;
+  color: #5f5e5e;
+  border-color: #d0c6ab;
+}
+.btn-xl-stop:not(:disabled):hover {
+  background: #ffdad6;
+  color: #93000a;
+  border-color: #ba1a1a;
+}
+
+.toggle-row-inside-card {
+  background: #f5f3f3;
+  border-radius: 0.75rem;
+}
 
 /* Standalone field (Grupos monitorados fora do card de Configurações) */
 .standalone-field {
@@ -256,6 +460,14 @@ body {
   box-shadow: 0 0 0 2px rgba(112,93,0,0.12);
 }
 .field input::placeholder { color: #b0a68a; }
+.field-hint {
+  font-size: 10px;
+  font-weight: 400;
+  color: #8e8770;
+  margin-top: 2px;
+  display: block;
+  line-height: 1.4;
+}
 
 .field-row {
   display: grid;
@@ -285,6 +497,168 @@ body {
 }
 .btn-save:hover { background: #5a4c00; }
 .btn-save:active { transform: scale(0.98); }
+/* Fix 12+14 U3: Save dentro do card-fullpage como footer interno do card.
+   Border-top mais claro pra ter contraste visível com bg amarelo escuro. */
+.btn-save-cardfooter {
+  margin: 0;
+  border-radius: 0;
+  border-top: 1px solid #d0c6ab;
+  padding: 12px 16px;
+  width: 100%;
+  flex-shrink: 0;
+}
+
+/* ─── Tab Histórico (Fix 13) ──────────────────────────────────────────────── */
+[data-tab-content="historico"] {
+  overflow: hidden;
+  gap: 0;
+}
+.historico-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 4px 10px;
+  flex-shrink: 0;
+}
+.historico-title {
+  margin: 0;
+  font-family: 'Hanken Grotesk', sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  color: #705d00;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.historico-title .material-symbols-outlined { font-size: 18px; }
+.historico-export {
+  background: #fff;
+  border: 1px solid #d0c6ab;
+  color: #705d00;
+  padding: 4px 8px;
+  border-radius: 0.5rem;
+  font-weight: 600;
+  font-size: 11px;
+}
+.historico-export:hover {
+  background: #ffd700;
+  color: #3a2f00;
+  border-color: #e9c400;
+}
+.historico-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-right: 2px;
+}
+.historico-chart-card {
+  background: #fff;
+  border: 1px solid #e4e2e2;
+  border-radius: 0.75rem;
+  padding: 10px 12px;
+}
+.historico-chart-title {
+  margin: 0 0 6px;
+  font-family: 'Inter', sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  color: #4d4732;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.historico-chart-container {
+  position: relative;
+  height: 130px;
+  width: 100%;
+}
+
+/* Fix 14 U6: dialog custom substitui confirm() nativo do navegador
+   (confirm() abre janela do Chrome central, fora do side panel — UX confusa). */
+.confirm-dialog {
+  border: 1px solid #d0c6ab;
+  border-radius: 0.75rem;
+  padding: 0;
+  max-width: 320px;
+  background: #fff;
+  box-shadow: 0 10px 32px rgba(0,0,0,0.2);
+}
+.confirm-dialog::backdrop {
+  background: rgba(0,0,0,0.4);
+}
+.confirm-dialog-title {
+  margin: 0;
+  padding: 14px 16px 8px;
+  font-family: 'Hanken Grotesk', sans-serif;
+  font-size: 14px;
+  font-weight: 700;
+  color: #705d00;
+}
+.confirm-dialog-body {
+  padding: 0 16px 12px;
+  font-family: 'Inter', sans-serif;
+  font-size: 12px;
+  color: #4d4732;
+  line-height: 1.5;
+  white-space: pre-line;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.confirm-dialog-actions {
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px 14px;
+  justify-content: flex-end;
+}
+.confirm-dialog-cancel,
+.confirm-dialog-ok {
+  padding: 6px 14px;
+  border-radius: 0.5rem;
+  font-family: 'Inter', sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid #d0c6ab;
+  transition: background 0.2s;
+}
+.confirm-dialog-cancel {
+  background: #fff;
+  color: #4d4732;
+}
+.confirm-dialog-cancel:hover { background: #f5f3f3; }
+.confirm-dialog-ok {
+  background: #ba1a1a;
+  color: #fff;
+  border-color: #ba1a1a;
+}
+.confirm-dialog-ok:hover { background: #93000a; }
+
+/* Botão secundário destrutivo (Limpar cache) */
+.btn-secondary-danger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  background: #fff;
+  border: 1px solid #ffdad6;
+  border-radius: 0.5rem;
+  color: #93000a;
+  padding: 9px 12px;
+  font-family: 'Inter', sans-serif;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+  margin-top: 4px;
+}
+.btn-secondary-danger:hover {
+  background: #ffdad6;
+  border-color: #ba1a1a;
+}
+.btn-secondary-danger:active { transform: scale(0.98); }
+.btn-secondary-danger .material-symbols-outlined { font-size: 16px; }
 .btn-save .dirty-dot {
   width: 7px;
   height: 7px;
@@ -335,7 +709,7 @@ body {
   text-transform: uppercase;
 }
 
-/* Logs */
+/* Logs — terminal-style header (D4) + footer métricas (D6) + scan-line (D5) */
 .logs-card {
   background: #1a1a1a;
   border-radius: 1rem;
@@ -343,7 +717,7 @@ body {
   display: flex;
   flex-direction: column;
   flex: 1 1 auto;
-  min-height: 140px;
+  min-height: 200px;
 }
 .logs-header {
   display: flex;
@@ -352,31 +726,272 @@ body {
   padding: 10px 14px;
   background: #242424;
 }
-.logs-title {
-  font-family: 'Hanken Grotesk', sans-serif;
-  font-size: 12px;
-  font-weight: 700;
-  color: #e9c400;
-  letter-spacing: 0.5px;
+.logs-header-terminal {
+  border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.logs-header-left {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
 }
-.logs-title .material-symbols-outlined { font-size: 15px; }
+.logs-dots {
+  display: flex;
+  gap: 5px;
+}
+.logs-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.logs-dot-red    { background: rgba(255, 107, 107, 0.5); }
+.logs-dot-yellow { background: rgba(255, 215, 0, 0.5); }
+.logs-dot-green  { background: rgba(105, 219, 124, 0.5); }
+.logs-title-mono {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.55);
+  letter-spacing: 1.5px;
+}
+.logs-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.logs-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.5);
+  transition: background 0.3s, color 0.3s;
+}
+.logs-badge[data-state="monitorando"] {
+  background: #ffd700;
+  color: #3a2f00;
+  animation: pulse-badge 1.6s infinite;
+}
+@keyframes pulse-badge {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 215, 0, 0.45); }
+  50%      { box-shadow: 0 0 0 4px rgba(255, 215, 0, 0); }
+}
+
+/* Body com scan-line */
+.logs-body {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.scan-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -80px;
+  height: 80px;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, rgba(255,215,0,0.06), transparent);
+  animation: scan 4s linear infinite;
+  z-index: 1;
+}
+@keyframes scan {
+  0%   { top: -80px; }
+  100% { top: 100%; }
+}
+
+/* Fix 10: .logs-footer removido — métricas moveram pra dashboard summary chips */
+
+/* ─── Dashboard panel ascendente (Fix 10) ────────────────────────────────── */
+/* Summary collapsed = 1 linha de chips. Click expande PRA CIMA (visualmente)
+   reduzindo a altura do .logs-card que está acima via flex layout. */
+.dashboard-panel {
+  background: #fff;
+  border: 1px solid #e4e2e2;
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+.dashboard-panel-up[open] {
+  border-color: #d0c6ab;
+}
+
+.dashboard-summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  user-select: none;
+  transition: background 0.2s;
+}
+.dashboard-summary::-webkit-details-marker { display: none; }
+.dashboard-summary:hover { background: #f5f3f3; }
+.dashboard-chevron {
+  font-size: 18px;
+  color: #705d00;
+  transition: transform 0.25s;
+  flex-shrink: 0;
+}
+.dashboard-panel[open] .dashboard-chevron {
+  transform: rotate(180deg);
+}
+
+.dashboard-metrics-row {
+  flex: 1;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+.metric-chip {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0 2px;
+  border-right: 1px solid #f0eeec;
+  line-height: 1.2;
+}
+.metric-chip:last-child { border-right: none; }
+.metric-chip-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8px;
+  font-weight: 500;
+  color: #7e775f;
+  letter-spacing: 0.5px;
+}
+.metric-chip-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: #1b1c1c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.metric-chip-value[data-state="on"]   { color: #2e7d32; }
+.metric-chip-value[data-state="off"]  { color: #ba1a1a; }
+.metric-chip-value[data-state="idle"] { color: #7e775f; }
+.metric-chip-value[data-state="ok"]   { color: #2e7d32; }
+.metric-chip-value[data-state="warn"] { color: #b88a00; }
+.metric-chip-value[data-state="error"]{ color: #ba1a1a; }
+
+.dashboard-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid #f5f3f3;
+}
+.dashboard-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.dashboard-card {
+  background: #f5f3f3;
+  border-radius: 0.5rem;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.dashboard-card-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8px;
+  font-weight: 500;
+  color: #7e775f;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.dashboard-card-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 16px;
+  font-weight: 700;
+  color: #1b1c1c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dashboard-card-value[data-state="ok"]    { color: #2e7d32; }
+.dashboard-card-value[data-state="warn"]  { color: #b88a00; }
+.dashboard-card-value[data-state="error"] { color: #ba1a1a; }
+
+.dashboard-last-error {
+  background: #fff4f2;
+  border: 1px solid #ffdad6;
+  border-radius: 0.5rem;
+  padding: 6px 10px;
+  display: flex;
+  flex-direction: column;
+}
+.dashboard-last-error[hidden] { display: none; }
+.dashboard-last-error-value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: #ba1a1a;
+  word-break: break-word;
+}
+
+.chart-container {
+  position: relative;
+  height: 140px;
+  width: 100%;
+}
+
+/* ─── Card "full-page" da tab Configurações ──────────────────────────────── */
+.card-fullpage {
+  background: #fff;
+  border: 1px solid #e4e2e2;
+  border-radius: 1rem;
+  overflow: hidden;
+}
+.card-fullpage-title {
+  margin: 0;
+  padding: 14px 16px;
+  border-bottom: 1px solid #f5f3f3;
+  font-family: 'Hanken Grotesk', sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  color: #705d00;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.card-fullpage-title .material-symbols-outlined {
+  font-size: 18px;
+  color: #705d00;
+}
+.card-fullpage .card-body-inner {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
 .btn-clear {
   background: none;
   border: none;
-  color: #555;
+  color: #aaa;
   cursor: pointer;
   font-size: 11px;
   padding: 2px 6px;
   border-radius: 4px;
   font-family: 'Inter', sans-serif;
-  transition: color 0.2s;
+  transition: color 0.2s, opacity 0.2s;
   display: flex;
   align-items: center;
   gap: 4px;
 }
+.btn-clear:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn-clear:disabled:hover { color: #aaa; }
 .btn-clear .material-symbols-outlined { font-size: 14px; }
 .btn-clear:hover { color: #ff6b6b; }
 #copyBtn:hover { color: #ffd43b; }
@@ -403,6 +1018,8 @@ body {
   font-size: 11px;
   line-height: 1.7;
   color: #ccc;
+  position: relative;
+  z-index: 2;
 }
 #logs::-webkit-scrollbar { width: 4px; }
 #logs::-webkit-scrollbar-track { background: transparent; }

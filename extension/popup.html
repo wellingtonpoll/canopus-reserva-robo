@@ -10,79 +10,238 @@
   <link rel="stylesheet" href="popup.css">
   <link rel="stylesheet" href="popup-base.css">
 </head>
-<body>
+<body data-tab="operacoes">
 
-  <!-- Header -->
+  <!-- Header com tabs -->
   <header class="app-header">
-    <span class="app-title">Canopus Robô</span>
-    <span class="status-pill" id="statusBadge">
-      <span class="status-dot" id="statusDot"></span>
-      <span id="statusText">Parado</span>
-    </span>
+    <div class="header-left">
+      <span class="header-avatar" aria-hidden="true">
+        <span class="material-symbols-outlined">smart_toy</span>
+      </span>
+      <span class="app-title">Canopus Robô</span>
+    </div>
   </header>
+
+  <nav class="tab-nav" role="tablist" aria-label="Seções">
+    <button type="button" class="tab-btn" data-tab="operacoes" role="tab" aria-selected="true" aria-controls="tab-operacoes">
+      <span class="material-symbols-outlined">monitoring</span>
+      <span>Operações</span>
+    </button>
+    <button type="button" class="tab-btn" data-tab="historico" role="tab" aria-selected="false" aria-controls="tab-historico">
+      <span class="material-symbols-outlined">insights</span>
+      <span>Histórico</span>
+    </button>
+    <button type="button" class="tab-btn" data-tab="config" role="tab" aria-selected="false" aria-controls="tab-config">
+      <span class="material-symbols-outlined">tune</span>
+      <span>Configurações</span>
+    </button>
+  </nav>
 
   <!-- Scrollable main -->
   <div class="main-scroll">
 
-    <!-- Action buttons -->
-    <div class="btn-row">
-      <button class="btn btn-start" id="startBtn">
-        <span class="material-symbols-outlined icon-sm">play_arrow</span>
-        Iniciar Robô
-      </button>
-      <button class="btn btn-stop" id="stopBtn" disabled>
-        <span class="material-symbols-outlined icon-sm">stop</span>
-        Parar
-      </button>
-    </div>
+    <!-- ═══ TAB: OPERAÇÕES ═══ -->
+    <section id="tab-operacoes" data-tab-content="operacoes" role="tabpanel" aria-labelledby="tab-btn-operacoes">
 
-    <!-- Test mode toggle -->
-    <div class="toggle-row">
-      <div>
-        <div class="toggle-label">Modo Teste</div>
-        <div class="toggle-sub">Monitora sem reservar</div>
+      <!-- Card Operações -->
+      <div class="card-operacoes">
+        <div class="card-operacoes-head">
+          <h2 class="card-operacoes-title">Operações</h2>
+          <span class="status-pill-inline" id="statusBadge">
+            <span class="status-dot-inline" id="statusDot"></span>
+            <span id="statusText">PARADO</span>
+          </span>
+        </div>
+
+        <div class="btn-xl-row">
+          <button class="btn-xl btn-xl-start" id="startBtn">
+            <span class="material-symbols-outlined btn-xl-icon">play_arrow</span>
+            <span class="btn-xl-label">INICIAR</span>
+          </button>
+          <button class="btn-xl btn-xl-stop" id="stopBtn" disabled>
+            <span class="material-symbols-outlined btn-xl-icon">stop</span>
+            <span class="btn-xl-label">PARAR</span>
+          </button>
+        </div>
+
+        <div class="toggle-row toggle-row-inside-card">
+          <div>
+            <div class="toggle-label">Modo Teste</div>
+            <div class="toggle-sub">Monitora sem reservar</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="modoTeste">
+            <span class="slider"></span>
+          </label>
+        </div>
       </div>
-      <label class="switch">
-        <input type="checkbox" id="modoTeste">
-        <span class="slider"></span>
-      </label>
-    </div>
 
-    <!-- Grupos monitorados (standalone, fora do card de Configurações) -->
-    <div class="standalone-field">
-      <div class="field">
-        <label>Grupos monitorados</label>
-        <input type="text" id="grupos" placeholder="009113:3,009114:2">
+      <!-- Grupos monitorados (fluxo operacional) -->
+      <div class="standalone-field">
+        <div class="field">
+          <label for="grupos">Grupos monitorados</label>
+          <input type="text" id="grupos" placeholder="009113:3,009114:2" aria-describedby="grupos-hint">
+          <small id="grupos-hint" class="field-hint">Robô vai monitorar apenas os grupos listados acima. Formato: <code>codigo:limite</code> separado por vírgula.</small>
+        </div>
       </div>
-    </div>
 
-    <!-- Config card -->
-    <div class="card" data-collapsible>
-      <button class="card-header" type="button" aria-expanded="false">
-        <span class="material-symbols-outlined">manage_accounts</span>
-        <span class="card-title">Configurações</span>
-        <span class="material-symbols-outlined card-chevron">expand_more</span>
-      </button>
-      <div class="card-body">
+      <!-- Logs terminal-style -->
+      <div class="logs-card">
+        <div class="logs-header logs-header-terminal">
+          <div class="logs-header-left">
+            <div class="logs-dots" aria-hidden="true">
+              <span class="logs-dot logs-dot-red"></span>
+              <span class="logs-dot logs-dot-yellow"></span>
+              <span class="logs-dot logs-dot-green"></span>
+            </div>
+            <span class="logs-title-mono">LIVE_EXECUTION_LOGS</span>
+          </div>
+          <div class="logs-header-right">
+            <span class="logs-badge" id="logsBadge" data-state="parado">PARADO</span>
+            <div class="logs-actions">
+              <button class="btn-clear" id="exportTelemetriaBtn" title="Exportar telemetria (.json)" aria-label="Exportar telemetria" disabled>
+                <span class="material-symbols-outlined">download</span>
+              </button>
+              <button class="btn-clear" id="copyBtn" title="Copiar logs" aria-label="Copiar logs">
+                <span class="material-symbols-outlined">content_copy</span>
+              </button>
+              <button class="btn-clear" id="clearBtn" title="Limpar logs" aria-label="Limpar logs">
+                <span class="material-symbols-outlined">delete_sweep</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="logs-body">
+          <div class="scan-line" aria-hidden="true"></div>
+          <div id="logs" aria-live="polite" role="log" aria-label="Logs do robô"></div>
+        </div>
+      </div>
+
+      <!-- Dashboard ascendente (rodapé da tab Operações).
+           Collapsed: 1 linha com chips de métricas + chevron up.
+           Expanded: cresce pra cima (logs encolhe) mostrando chart. -->
+      <details class="dashboard-panel dashboard-panel-up">
+        <summary class="dashboard-summary">
+          <div class="dashboard-metrics-row" aria-label="Métricas do robô">
+            <span class="metric-chip">
+              <span class="metric-chip-label">CICLOS</span>
+              <span class="metric-chip-value" id="metricCiclos">0</span>
+            </span>
+            <span class="metric-chip">
+              <span class="metric-chip-label">RESERV</span>
+              <span class="metric-chip-value" id="metricReservas">0</span>
+            </span>
+            <span class="metric-chip">
+              <span class="metric-chip-label">PORTAL</span>
+              <span class="metric-chip-value" id="metricPortal" data-state="off">—</span>
+            </span>
+            <span class="metric-chip">
+              <span class="metric-chip-label">RATE</span>
+              <span class="metric-chip-value" id="metricRate" data-state="ok">OK</span>
+            </span>
+          </div>
+          <span class="material-symbols-outlined dashboard-chevron">expand_less</span>
+        </summary>
+        <div class="dashboard-body">
+          <div class="dashboard-cards">
+            <div class="dashboard-card">
+              <span class="dashboard-card-label">Consultas hoje</span>
+              <span class="dashboard-card-value" id="dashConsultas">0</span>
+            </div>
+            <div class="dashboard-card">
+              <span class="dashboard-card-label">Reservas hoje</span>
+              <span class="dashboard-card-value" id="dashReservas">0</span>
+            </div>
+            <div class="dashboard-card">
+              <span class="dashboard-card-label">Ciclos hoje</span>
+              <span class="dashboard-card-value" id="dashCiclos">0</span>
+            </div>
+            <div class="dashboard-card">
+              <span class="dashboard-card-label">Rate Limit</span>
+              <span class="dashboard-card-value" id="dashRateLimit" data-state="ok">OK</span>
+            </div>
+          </div>
+          <div class="dashboard-last-error" hidden id="metricErroWrap">
+            <span class="dashboard-card-label">Último erro</span>
+            <span class="dashboard-last-error-value" id="metricErro" title="">—</span>
+          </div>
+        </div>
+      </details>
+
+    </section>
+
+    <!-- ═══ TAB: HISTÓRICO ═══ -->
+    <section id="tab-historico" data-tab-content="historico" role="tabpanel" aria-labelledby="tab-btn-historico" hidden>
+      <div class="historico-header">
+        <h2 class="historico-title">
+          <span class="material-symbols-outlined">insights</span>
+          Histórico (30 dias)
+        </h2>
+        <button class="btn-clear historico-export" id="exportCsvBtn" title="Exportar CSV">
+          <span class="material-symbols-outlined">download</span>
+          CSV
+        </button>
+      </div>
+
+      <div class="historico-scroll">
+        <div class="historico-chart-card">
+          <h3 class="historico-chart-title">Consultas por dia</h3>
+          <div class="historico-chart-container">
+            <canvas id="chartConsultas" aria-label="Consultas por dia"></canvas>
+          </div>
+        </div>
+
+        <div class="historico-chart-card">
+          <h3 class="historico-chart-title">Reservas realizadas por dia</h3>
+          <div class="historico-chart-container">
+            <canvas id="chartReservas" aria-label="Reservas por dia"></canvas>
+          </div>
+        </div>
+
+        <div class="historico-chart-card">
+          <h3 class="historico-chart-title">Taxa de sucesso (% reservas/consultas)</h3>
+          <div class="historico-chart-container">
+            <canvas id="chartTaxaSucesso" aria-label="Taxa sucesso de reservas"></canvas>
+          </div>
+        </div>
+
+        <div class="historico-chart-card">
+          <h3 class="historico-chart-title">Taxa rate-limit (% requests bloqueados)</h3>
+          <div class="historico-chart-container">
+            <canvas id="chartTaxaRateLimit" aria-label="Taxa rate limit"></canvas>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ TAB: CONFIGURAÇÕES ═══ -->
+    <section id="tab-config" data-tab-content="config" role="tabpanel" aria-labelledby="tab-btn-config" hidden>
+
+      <div class="card-fullpage">
+        <h2 class="card-fullpage-title">
+          <span class="material-symbols-outlined">manage_accounts</span>
+          Configurações
+        </h2>
+
         <div class="card-body-inner">
 
           <div class="field">
-            <label>Usuário Canopus</label>
+            <label for="usuario">Usuário Canopus</label>
             <input type="text" id="usuario" placeholder="Código do usuário">
           </div>
 
           <div class="field">
-            <label>Senha Canopus</label>
+            <label for="senha">Senha Canopus</label>
             <input type="password" id="senha" placeholder="Senha">
           </div>
 
           <div class="field-row">
             <div class="field">
-              <label>Delay mín. (s)</label>
+              <label for="delayMin">Delay mín. (s)</label>
               <input type="number" id="delayMin" placeholder="1.0" step="0.5" min="0.5">
             </div>
             <div class="field">
-              <label>Delay máx. (s)</label>
+              <label for="delayMax">Delay máx. (s)</label>
               <input type="number" id="delayMax" placeholder="3.0" step="0.5" min="1">
             </div>
           </div>
@@ -92,13 +251,15 @@
           </div>
 
           <div class="field">
-            <label>Bot Token</label>
-            <input type="password" id="telegramToken" placeholder="123456:ABC-DEF...">
+            <label for="telegramToken">Bot Token</label>
+            <input type="password" id="telegramToken" placeholder="123456:ABC-DEF..." aria-describedby="telegramToken-hint">
+            <small id="telegramToken-hint" class="field-hint">Obtenha conversando com @BotFather no Telegram.</small>
           </div>
 
           <div class="field">
-            <label>Chat ID</label>
-            <input type="text" id="telegramChatId" placeholder="-100123456789">
+            <label for="telegramChatId">Chat ID</label>
+            <input type="text" id="telegramChatId" placeholder="-100123456789" aria-describedby="telegramChatId-hint">
+            <small id="telegramChatId-hint" class="field-hint">Use @userinfobot no Telegram pra descobrir o ID do seu chat/grupo.</small>
           </div>
 
           <div class="config-divider">
@@ -116,44 +277,37 @@
             </label>
           </div>
 
-        </div>
-      </div>
-    </div>
+          <button class="btn-secondary-danger" id="clearCacheBtn" type="button">
+            <span class="material-symbols-outlined icon-sm">delete_forever</span>
+            <span>Limpar cache da extensão</span>
+          </button>
+          <small class="field-hint">Apaga configurações, métricas, logs e telemetria armazenados. Não afeta seu login no portal Canopus.</small>
 
-    <!-- Save button (com indicador de alterações não salvas) -->
-    <button class="btn-save" id="saveBtn" data-dirty="false">
-      <span class="material-symbols-outlined icon-sm">save</span>
-      <span class="btn-save-label">Salvar Configurações</span>
-      <span class="dirty-dot" aria-hidden="true"></span>
-    </button>
-
-    <!-- Logs -->
-    <div class="logs-card">
-      <div class="logs-header">
-        <span class="logs-title">
-          <span class="material-symbols-outlined">terminal</span>
-          Logs ao vivo
-        </span>
-        <div class="logs-actions">
-          <button class="btn-clear" id="exportTelemetriaBtn" title="Exportar telemetria (.json)" hidden>
-            <span class="material-symbols-outlined">download</span>
-            Telemetria
-          </button>
-          <button class="btn-clear" id="copyBtn" title="Copiar logs">
-            <span class="material-symbols-outlined">content_copy</span>
-            Copiar
-          </button>
-          <button class="btn-clear" id="clearBtn" title="Limpar logs">
-            <span class="material-symbols-outlined">delete_sweep</span>
-            Limpar
-          </button>
         </div>
+
+        <!-- Save dentro do card como footer interno -->
+        <button class="btn-save btn-save-cardfooter" id="saveBtn" data-dirty="false">
+          <span class="material-symbols-outlined icon-sm">save</span>
+          <span class="btn-save-label">Salvar Configurações</span>
+          <span class="dirty-dot" aria-hidden="true"></span>
+        </button>
       </div>
-      <div id="logs"></div>
-    </div>
+
+    </section>
 
   </div>
 
+  <!-- Dialog modal pra confirmações destrutivas (substitui confirm() nativo) -->
+  <dialog id="confirmDialog" class="confirm-dialog">
+    <h3 class="confirm-dialog-title" id="confirmDialogTitle">Confirmar</h3>
+    <div class="confirm-dialog-body" id="confirmDialogBody"></div>
+    <div class="confirm-dialog-actions">
+      <button class="confirm-dialog-cancel" id="confirmDialogCancel" type="button">Cancelar</button>
+      <button class="confirm-dialog-ok" id="confirmDialogOk" type="button">Confirmar</button>
+    </div>
+  </dialog>
+
+  <script src="lib/chart.umd.min.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

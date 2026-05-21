@@ -50,3 +50,9 @@ key.pem
 # Build artifacts da release
 dist/
 *.crx
+
+# Extension ID (gerado a partir do key.pem — não commitar)
+extension_id.md
+
+# Screenshots gerados pelo visual-check Playwright
+tests/visual/

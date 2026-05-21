@@ -25,7 +25,8 @@ const TURNSTILE_COOLDOWN_MS = 60_000;
 const TURNSTILE_BLOQUEIO_MS = 30_000;
 
 // URL pattern usado pelo chrome.tabs.query pra achar aba do portal
-const PORTAL_TAB_URL = "https://parceiros.consorciocanopus.com.br/*";
+// (alinhado com matches do content_scripts no manifest pra não consultar tabs onde o script não roda)
+const PORTAL_TAB_URL = "https://parceiros.consorciocanopus.com.br/apps/*";
 
 // Timeout pra resposta do content-script (cobre o caso comum + Turnstile interativo)
 const TAB_RESERVA_TIMEOUT_MS = 45_000;
@@ -53,6 +54,35 @@ const TELEMETRIA_BODY_TRUNC  = 2048;
 
 const TELEMETRIA_BATCH = [];
 let TELEMETRIA_FLUSH_TIMER = null;
+
+// Cache em memória da flag pra evitar I/O em chrome.storage.local a cada evento.
+// `null` = não inicializado (lazy load); `true`/`false` = valor cacheado.
+let TELEMETRIA_LIGADA_CACHE = null;
+
+async function getTelemetriaLigada() {
+  if (TELEMETRIA_LIGADA_CACHE !== null) return TELEMETRIA_LIGADA_CACHE;
+  try {
+    const { TELEMETRIA_LIGADA } = await chrome.storage.local.get(["TELEMETRIA_LIGADA"]);
+    TELEMETRIA_LIGADA_CACHE = !!TELEMETRIA_LIGADA;
+  } catch (_) {
+    TELEMETRIA_LIGADA_CACHE = false;
+  }
+  return TELEMETRIA_LIGADA_CACHE;
+}
+
+// Helper pra testes: força re-leitura do storage no próximo getTelemetriaLigada()
+function __resetTelemetriaCache() {
+  TELEMETRIA_LIGADA_CACHE = null;
+}
+
+// Helper pra testes: limpa batch em memória pra evitar pollution entre testes
+function __resetTelemetriaBatch() {
+  TELEMETRIA_BATCH.length = 0;
+  if (TELEMETRIA_FLUSH_TIMER) {
+    clearTimeout(TELEMETRIA_FLUSH_TIMER);
+    TELEMETRIA_FLUSH_TIMER = null;
+  }
+}
 
 const SANITIZE_REDACT_KEYS = /^(senha|password|pwd|secret)$/i;
 const SANITIZE_TRUNCATE_KEYS = /^(telegram_?token|telegramtoken|TELEGRAM_TOKEN)$/i;
@@ -93,8 +123,7 @@ function sanitize(obj, depth = 0) {
 
 async function telemetria(tipo, dados) {
   try {
-    const { TELEMETRIA_LIGADA } = await chrome.storage.local.get(["TELEMETRIA_LIGADA"]);
-    if (!TELEMETRIA_LIGADA) return;
+    if (!(await getTelemetriaLigada())) return;
 
     TELEMETRIA_BATCH.push({ t: Date.now(), tipo, dados: sanitize(dados) });
 
@@ -113,15 +142,43 @@ async function flushTelemetria() {
     clearTimeout(TELEMETRIA_FLUSH_TIMER);
     TELEMETRIA_FLUSH_TIMER = null;
   }
-  if (TELEMETRIA_BATCH.length === 0) return;
+  // Snapshot atomic: copia + zera o array em memória ANTES de qualquer await,
+  // pra evitar perda de eventos se telemetria() for chamada durante o flush.
+  if (TELEMETRIA_BATCH.length === 0) {
+    // Tenta recuperar batch persistido (caso SW tenha sido killed antes do flush anterior)
+    try {
+      const sess = await chrome.storage.session.get(["pending_telemetria_batch"]);
+      if (Array.isArray(sess.pending_telemetria_batch) && sess.pending_telemetria_batch.length > 0) {
+        TELEMETRIA_BATCH.push(...sess.pending_telemetria_batch);
+        await chrome.storage.session.set({ pending_telemetria_batch: [] });
+      }
+    } catch (_) {}
+    if (TELEMETRIA_BATCH.length === 0) return;
+  }
+  const snapshot = TELEMETRIA_BATCH.splice(0, TELEMETRIA_BATCH.length);
   try {
     const local = await chrome.storage.local.get(["telemetria_buffer"]);
     const buf = Array.isArray(local.telemetria_buffer) ? local.telemetria_buffer : [];
-    buf.push(...TELEMETRIA_BATCH);
-    TELEMETRIA_BATCH.length = 0;
+    buf.push(...snapshot);
     while (buf.length > TELEMETRIA_MAX_ENTRIES) buf.shift();
     await chrome.storage.local.set({ telemetria_buffer: buf });
-  } catch (_) { /* idem */ }
+  } catch (_) {
+    // Falhou — devolve eventos pro batch pra tentar de novo no próximo flush
+    TELEMETRIA_BATCH.unshift(...snapshot);
+  }
+}
+
+// Persiste batch pendente em storage.session pra sobreviver SW kill. Chamado em
+// pontos críticos onde SW pode ser killed em seguida (final de ciclo, stop).
+async function persistirBatchPendente() {
+  if (TELEMETRIA_BATCH.length === 0) return;
+  try {
+    const sess = await chrome.storage.session.get(["pending_telemetria_batch"]);
+    const pending = Array.isArray(sess.pending_telemetria_batch) ? sess.pending_telemetria_batch : [];
+    pending.push(...TELEMETRIA_BATCH);
+    TELEMETRIA_BATCH.length = 0;
+    await chrome.storage.session.set({ pending_telemetria_batch: pending });
+  } catch (_) {}
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -246,12 +303,39 @@ async function apiPost(path, body, tentativaNet = 0) {
     } catch (_) { /* corpo ilegível — segue sem detecção 1015 */ }
     const cloudflare1015 = /1015|rate.?limited/i.test(bodyText);
 
+    // Fix 6.3: detecta Cloudflare 1106 (IP banido). Não é rate-limit transiente — é
+    // bloqueio explícito do dono do site, sem retry possível. Throw IP_BANIDO →
+    // runPollingLoop para tudo e alerta cliente.
+    const ipBanned = /error_code\s*[":=]\s*"?1106|ipv6_banned|ip_banned|access_denied/i.test(bodyText);
+    if (ipBanned) {
+      telemetria("apiPost.err", {
+        path, kind: "ip_banned", status: resp.status,
+        body: truncateString(bodyText, TELEMETRIA_BODY_TRUNC),
+        latencyMs: Date.now() - reqStart
+      });
+      const err = new Error("IP_BANIDO");
+      err.status = resp.status;
+      err.body = bodyText.slice(0, 500);
+      throw err;
+    }
+
     if (cloudflare1015 && bodyText) {
       const snippet = bodyText.slice(0, 200).replace(/\s+/g, " ").trim();
       notificarPopup(`🔎 Body 429 (Cloudflare?): ${snippet}`);
     }
 
     await registrarHitERateLimit();
+
+    // Fix 13: incrementa counter de rate-limits em metricasDia (persistente)
+    try {
+      const diaRl = new Date().toLocaleDateString('en-CA');
+      const localRl = await chrome.storage.local.get(["metricasDia"]);
+      const mdRl = (localRl.metricasDia && typeof localRl.metricasDia === "object") ? localRl.metricasDia : {};
+      const dayRl = mdRl[diaRl] || { ciclos: 0, reservas: 0, consultas: 0, rateLimits: 0 };
+      dayRl.rateLimits = (dayRl.rateLimits || 0) + 1;
+      mdRl[diaRl] = dayRl;
+      await chrome.storage.local.set({ metricasDia: mdRl });
+    } catch (_) {}
 
     telemetria("apiPost.err", {
       path, kind: "rate_limit", status: resp.status,
@@ -351,6 +435,64 @@ async function reservar(grupo, idUsuario, idEmpresa) {
   });
 }
 
+// Fix 11 + 14 B5: tenta recuperar content-script automaticamente. Sem reload —
+// usa chrome.scripting.executeScript pra injetar content.js dinamicamente.
+// Se aba está em outra rota do portal, navega pra /apps/reservas.
+// Em vez de delays hardcoded, faz polling até sendMessage suceder (max 5s).
+async function tentarRecuperarContentScript(tab) {
+  if (!tab || tab.id == null) return false;
+  const url = tab.url || "";
+  const isAppsRoute = /^https:\/\/parceiros\.consorciocanopus\.com\.br\/apps\//.test(url);
+
+  // Poll: ping o content-script até responder ou timeout. Mais robusto que
+  // sleep fixo em redes lentas.
+  async function aguardarContentScriptVivo(timeoutMs) {
+    const inicio = Date.now();
+    while (Date.now() - inicio < timeoutMs) {
+      try {
+        const resp = await chrome.tabs.sendMessage(tab.id, { action: "ping" });
+        if (resp) return true;
+      } catch (_) { /* content-script ainda não responde — tenta de novo */ }
+      await sleep(250);
+    }
+    return false;
+  }
+
+  if (isAppsRoute) {
+    try {
+      if (chrome.scripting && chrome.scripting.executeScript) {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ["content.js"]
+        });
+        telemetria("content_script.injected", { tabId: tab.id, method: "scripting" });
+        const vivo = await aguardarContentScriptVivo(5000);
+        telemetria("content_script.alive_after_inject", { vivo });
+        return vivo;
+      }
+    } catch (err) {
+      telemetria("content_script.inject_err", { erro: (err && err.message) || String(err) });
+      return false;
+    }
+    return false;
+  }
+
+  try {
+    const isPortalDomain = /^https:\/\/parceiros\.consorciocanopus\.com\.br/.test(url);
+    if (isPortalDomain) {
+      await chrome.tabs.update(tab.id, { url: "https://parceiros.consorciocanopus.com.br/apps/reservas" });
+      telemetria("content_script.navigated", { tabId: tab.id, from: url });
+      // Navegação leva mais tempo: bootstrap Angular + content_scripts via manifest
+      const vivo = await aguardarContentScriptVivo(8000);
+      telemetria("content_script.alive_after_navigate", { vivo });
+      return vivo;
+    }
+  } catch (err) {
+    telemetria("content_script.navigate_err", { erro: (err && err.message) || String(err) });
+  }
+  return false;
+}
+
 // Reserva via content-script (Fix 3-H). Routes through page DOM context para passar pelo Turnstile.
 // Retorna sempre objeto rotulado com chaves específicas (semAba, turnstileTimeout, fase2Pendente, erro, result).
 async function reservarViaTab(grupo, grupoId) {
@@ -371,26 +513,60 @@ async function reservarViaTab(grupo, grupoId) {
   }
 
   const tabId = tabs[0].id;
+  const windowId = tabs[0].windowId;
   const reqStart = Date.now();
-  telemetria("reserva.tab.req", { grupoId, NM_Produto: grupo.NM_Produto, tabId });
-  let tabResp;
+  telemetria("reserva.tab.req", { grupoId, NM_Produto: grupo.NM_Produto, tabId, windowId });
+
+  // Fix 5: foca aba+janela ANTES de mandar reservar via content-script. Cliente
+  // é puxado pro portal pra acompanhar o robô agindo e resolver Turnstile se
+  // o widget pedir "Sou humano".
   try {
-    tabResp = await Promise.race([
+    await chrome.tabs.update(tabId, { active: true });
+    if (windowId != null && chrome.windows && typeof chrome.windows.update === "function") {
+      await chrome.windows.update(windowId, { focused: true });
+    }
+  } catch (err) {
+    telemetria("reserva.tab.focus_err", { erro: (err && err.message) || String(err) });
+  }
+
+  async function trySendMessage() {
+    return Promise.race([
       chrome.tabs.sendMessage(tabId, { action: "reservar_via_dom", grupo }),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error("TAB_RESERVA_TIMEOUT")), TAB_RESERVA_TIMEOUT_MS)
       )
     ]);
+  }
+
+  let tabResp;
+  try {
+    tabResp = await trySendMessage();
   } catch (err) {
     const errMsg = (err && err.message) || String(err);
     if (errMsg.includes("Receiving end does not exist") || errMsg.includes("Could not establish connection")) {
-      const msg = `⚠️ Content-script não está ativo na aba do portal. Recarregue a aba parceiros.consorciocanopus.com.br (F5) e tente novamente.`;
-      notificarPopup(msg);
-      await telegramNotify(msg);
-      return { erro: "CONTENT_SCRIPT_NAO_INJETADO" };
+      // Fix 11: tenta recuperar automaticamente — injetar via scripting OU navegar pra /apps/reservas
+      notificarPopup(`⚙️ Content-script ausente — tentando recuperar automaticamente...`);
+      const recuperou = await tentarRecuperarContentScript(tabs[0]);
+      if (recuperou) {
+        try {
+          tabResp = await trySendMessage();
+          notificarPopup(`✅ Content-script recuperado.`);
+        } catch (err2) {
+          const errMsg2 = (err2 && err2.message) || String(err2);
+          notificarPopup(`❌ Recuperação falhou: ${errMsg2}. Recarregue a aba (F5).`);
+          await telegramNotify(`Recuperação automática do content-script falhou. Cliente precisa F5.`);
+          return { erro: "CONTENT_SCRIPT_NAO_INJETADO" };
+        }
+      } else {
+        const msg = `⚠️ Não consegui recuperar o content-script. Abra parceiros.consorciocanopus.com.br/apps/reservas e recarregue (F5).`;
+        notificarPopup(msg);
+        await telegramNotify(msg);
+        return { erro: "CONTENT_SCRIPT_NAO_INJETADO" };
+      }
+    } else {
+      notificarPopup(`❌ Falha ao falar com content-script (${grupoId}): ${errMsg}`);
+      return { erro: errMsg };
     }
-    notificarPopup(`❌ Falha ao falar com content-script (${grupoId}): ${errMsg}`);
-    return { erro: errMsg };
   }
 
   if (!tabResp) {
@@ -558,18 +734,37 @@ function notificarPopup(text) {
   chrome.runtime.sendMessage({ action: "log", text }).catch(() => {});
 }
 
+// Fix 14 U1: persistir último erro em storage.session pra popup recuperar ao reabrir.
+// Popup limpa quando fecha — sem persistência o ERRO no footer some.
+async function registrarUltimoErroPersistente(texto) {
+  if (!texto) return;
+  const t = String(texto).replace(/[❌💣🚫]/g, "").trim();
+  if (!t) return;
+  try {
+    await chrome.storage.session.set({ ultimoErro: { texto: t.slice(0, 200), t: Date.now() } });
+  } catch (_) {}
+}
+
+const TELEGRAM_TIMEOUT_MS = 5_000;
+
 async function telegramNotify(msg) {
   const { TELEGRAM_TOKEN, TELEGRAM_CHAT_ID } = await chrome.storage.local.get([
     "TELEGRAM_TOKEN", "TELEGRAM_CHAT_ID"
   ]);
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TELEGRAM_TIMEOUT_MS);
   try {
     await fetch(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: msg })
+      body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: msg }),
+      signal: controller.signal
     });
-  } catch (_) {}
+  } catch (_) { /* timeout, offline ou erro do servidor — não bloqueia ciclo */ }
+  finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function reservarComLimite(grupo, uid, eid, grupoId, limite, reservasPorGrupo, modoTeste) {
@@ -677,98 +872,163 @@ async function reservarComLimite(grupo, uid, eid, grupoId, limite, reservasPorGr
 async function runMonitorCycle() {
   const cycleStart = Date.now();
   telemetria("cycle.start", {});
-  const stored = await chrome.storage.local.get([
-    "idUsuario", "idEmpresa", "GRUPOS_CONFIG", "MODO_TESTE"
-  ]);
-  let uid = stored.idUsuario;
-  let eid = stored.idEmpresa;
 
-  if (!uid) {
-    const loginData = await fazerLogin();
-    uid = loginData.IdUsuario;
-    eid = loginData.IdEmpresa;
-    await chrome.storage.local.set({ idUsuario: uid, idEmpresa: eid });
-    const loginMsg = "✅ Login realizado com sucesso!";
-    notificarPopup(loginMsg);
-    await telegramNotify(loginMsg);
+  // Fix 15: declarado no top do escopo pra ficar acessível no finally — garante que
+  // cycle.end + atualização metricasDia rode mesmo em ciclos sem detectados.
+  let detectados = [];
+  let resultados = [];
+  let sistemaFechadoErr = null;
+
+  try {
+    const stored = await chrome.storage.local.get([
+      "idUsuario", "idEmpresa", "GRUPOS_CONFIG", "MODO_TESTE"
+    ]);
+    let uid = stored.idUsuario;
+    let eid = stored.idEmpresa;
+
+    if (!uid) {
+      const loginData = await fazerLogin();
+      uid = loginData.IdUsuario;
+      eid = loginData.IdEmpresa;
+      await chrome.storage.local.set({ idUsuario: uid, idEmpresa: eid, idUsuarioObtidoEm: Date.now() });
+      const loginMsg = "✅ Login realizado com sucesso!";
+      notificarPopup(loginMsg);
+      await telegramNotify(loginMsg);
+    }
+
+    const gruposResp = await buscarGrupos(uid);
+    const gruposAlvo = parseGruposConfig(stored.GRUPOS_CONFIG);
+    const grupos = extrairGrupos(gruposResp);
+
+    notificarPopup(`📦 ${grupos.length} grupos consultados`);
+
+    const { reservasPorGrupo = {} } = await chrome.storage.local.get(["reservasPorGrupo"]);
+    const sessProdutos = await chrome.storage.session.get(["produtosBloqueados", "gruposEmCooldown"]);
+    const produtosBloqueados = Array.isArray(sessProdutos.produtosBloqueados) ? sessProdutos.produtosBloqueados : [];
+    const cooldownRaw = sessProdutos.gruposEmCooldown && typeof sessProdutos.gruposEmCooldown === "object" ? sessProdutos.gruposEmCooldown : {};
+    const agoraMs = Date.now();
+    let cooldownLimpou = false;
+    const cooldown = {};
+    for (const k of Object.keys(cooldownRaw)) {
+      if (cooldownRaw[k] > agoraMs) cooldown[k] = cooldownRaw[k];
+      else cooldownLimpou = true;
+    }
+    if (cooldownLimpou) await chrome.storage.session.set({ gruposEmCooldown: cooldown });
+
+    // Dedup por CD_Grupo: API retorna múltiplos bens do mesmo grupo no mesmo ciclo.
+    // Sem dedup, reservaríamos 2× o mesmo grupoId em paralelo (2× sendMessage, 2× cooldown).
+    const jaDetectado = new Set();
+    const dedupContagem = {};
+    for (const grupo of grupos) {
+      const codigo = String(grupo.CD_Grupo || "");
+      if (!(codigo in gruposAlvo)) continue;
+      dedupContagem[codigo] = (dedupContagem[codigo] || 0) + 1;
+      if (jaDetectado.has(codigo)) continue;
+
+      const limite = gruposAlvo[codigo];
+      const feitas = reservasPorGrupo[codigo] || 0;
+      if (feitas >= limite) continue;
+
+      if (produtosBloqueados.includes(grupo.ID_Produto)) continue;
+      if (cooldown[codigo]) continue;
+
+      jaDetectado.add(codigo);
+      detectados.push({ grupo, grupoId: codigo, limite });
+    }
+    const duplicados = Object.keys(dedupContagem).filter(k => dedupContagem[k] > 1);
+    if (duplicados.length) {
+      telemetria("dedup.applied", { duplicados, contagem: dedupContagem });
+    }
+
+    if (detectados.length === 0) {
+      notificarPopup(`💥 Nenhuma cota disponível no momento...`);
+      const sessIdle = await chrome.storage.session.get(["ciclosVazios"]);
+      const novosVazios = Math.min(Number(sessIdle.ciclosVazios || 0) + 1, IDLE_MAX_CICLOS);
+      await chrome.storage.session.set({ ciclosVazios: novosVazios });
+      return; // finally roda — cycle.end + metricasDia
+    }
+
+    // Vagas detectadas → reset idle counter
+    await chrome.storage.session.set({ ciclosVazios: 0 });
+
+    const lista = Object.keys(gruposAlvo).sort().join(", ");
+    notificarPopup(`🔍 Buscando por cotas: ${lista}...`);
+
+    // Fix 6.1: serial — DOM é singleton, paralelo cria race condition no modal global
+    for (const d of detectados) {
+      try {
+        const valor = await reservarComLimite(d.grupo, uid, eid, d.grupoId, d.limite, reservasPorGrupo, stored.MODO_TESTE);
+        resultados.push({ status: "fulfilled", value: valor });
+      } catch (err) {
+        resultados.push({ status: "rejected", reason: err });
+        if (err && err.message === "SISTEMA_FECHADO") {
+          sistemaFechadoErr = err;
+          break; // não adianta tentar mais grupos com sistema fechado
+        }
+      }
+    }
+  } finally {
+    // Fix 15: cycle.end + atualização métricas SEMPRE rodam (mesmo em ciclo vazio
+    // ou exception). Garante que ciclos/consultas crescem na tab Operações e Histórico
+    // independente de haver detectados ou reservas.
+    telemetria("cycle.end", {
+      duracaoMs: Date.now() - cycleStart,
+      detectados: detectados.length,
+      resultados: resultados.map(r => r.status === "fulfilled"
+        ? { ok: true, ...r.value }
+        : { ok: false, erro: (r.reason && r.reason.message) || String(r.reason) })
+    });
+
+    // Fix 12: métricas em storage.local (persistente) pra agregar entre sessões + usuários.
+    // metricasDia mantém últimos 30 dias. metricasHoras só do dia atual (cleanup auto).
+    try {
+      const agora = new Date();
+      // Fix 14 B4: usa data local (BRT) em vez de UTC pra evitar virada em UTC midnight
+      const dia = agora.toLocaleDateString('en-CA');
+      const hh = String(agora.getHours()).padStart(2, "0");
+      const keyHora = dia + "-" + hh;
+
+      const local = await chrome.storage.local.get(["metricasDia", "metricasHoras"]);
+      const metricasDia = (local.metricasDia && typeof local.metricasDia === "object") ? local.metricasDia : {};
+      const metricasHoras = (local.metricasHoras && typeof local.metricasHoras === "object") ? local.metricasHoras : {};
+
+      const reservasNoCiclo = resultados.filter(r => r.status === "fulfilled" && r.value && r.value.reservou).length;
+      // 1 = chamada listGruposReserva; +N = chamadas de reserva tentadas (mesmo se falharam)
+      const consultasNoCiclo = 1 + detectados.length;
+
+      // Fix 14 B1: preservar rateLimits que apiPost incrementa em paralelo.
+      // Read-modify-write: nunca sobrescrever campo que outro caminho atualiza.
+      const m = metricasDia[dia] || { ciclos: 0, reservas: 0, consultas: 0, rateLimits: 0 };
+      m.ciclos = (m.ciclos || 0) + 1;
+      m.reservas = (m.reservas || 0) + reservasNoCiclo;
+      m.consultas = (m.consultas || 0) + consultasNoCiclo;
+      if (m.rateLimits == null) m.rateLimits = 0;
+      metricasDia[dia] = m;
+
+      const h = metricasHoras[keyHora] || { ciclos: 0, reservas: 0 };
+      h.ciclos += 1;
+      h.reservas += reservasNoCiclo;
+      metricasHoras[keyHora] = h;
+
+      // Cleanup metricasDia: mantém últimos 30 dias
+      const cutoff = Date.now() - (30 * 24 * 60 * 60 * 1000);
+      const cutoffStr = new Date(cutoff).toLocaleDateString('en-CA');
+      for (const k of Object.keys(metricasDia)) {
+        if (k < cutoffStr) delete metricasDia[k];
+      }
+
+      // Cleanup metricasHoras: só hoje
+      for (const k of Object.keys(metricasHoras)) {
+        if (!k.startsWith(dia + "-")) delete metricasHoras[k];
+      }
+
+      await chrome.storage.local.set({ metricasDia, metricasHoras });
+    } catch (_) {}
+
+    await flushTelemetria();
   }
 
-  const gruposResp = await buscarGrupos(uid);
-  const gruposAlvo = parseGruposConfig(stored.GRUPOS_CONFIG);
-  const grupos = extrairGrupos(gruposResp);
-
-  notificarPopup(`📦 ${grupos.length} grupos consultados`);
-
-  const { reservasPorGrupo = {} } = await chrome.storage.local.get(["reservasPorGrupo"]);
-  const sessProdutos = await chrome.storage.session.get(["produtosBloqueados", "gruposEmCooldown"]);
-  const produtosBloqueados = Array.isArray(sessProdutos.produtosBloqueados) ? sessProdutos.produtosBloqueados : [];
-  const cooldownRaw = sessProdutos.gruposEmCooldown && typeof sessProdutos.gruposEmCooldown === "object" ? sessProdutos.gruposEmCooldown : {};
-  const agoraMs = Date.now();
-  let cooldownLimpou = false;
-  const cooldown = {};
-  for (const k of Object.keys(cooldownRaw)) {
-    if (cooldownRaw[k] > agoraMs) cooldown[k] = cooldownRaw[k];
-    else cooldownLimpou = true;
-  }
-  if (cooldownLimpou) await chrome.storage.session.set({ gruposEmCooldown: cooldown });
-  const detectados = [];
-
-  // Dedup por CD_Grupo: API retorna múltiplos bens do mesmo grupo no mesmo ciclo.
-  // Sem dedup, reservaríamos 2× o mesmo grupoId em paralelo (2× sendMessage, 2× cooldown).
-  const jaDetectado = new Set();
-  const dedupContagem = {};
-  for (const grupo of grupos) {
-    const codigo = String(grupo.CD_Grupo || "");
-    if (!(codigo in gruposAlvo)) continue;
-    dedupContagem[codigo] = (dedupContagem[codigo] || 0) + 1;
-    if (jaDetectado.has(codigo)) continue;
-
-    const limite = gruposAlvo[codigo];
-    const feitas = reservasPorGrupo[codigo] || 0;
-    if (feitas >= limite) continue;
-
-    if (produtosBloqueados.includes(grupo.ID_Produto)) continue;
-    if (cooldown[codigo]) continue;
-
-    jaDetectado.add(codigo);
-    detectados.push({ grupo, grupoId: codigo, limite });
-  }
-  const duplicados = Object.keys(dedupContagem).filter(k => dedupContagem[k] > 1);
-  if (duplicados.length) {
-    telemetria("dedup.applied", { duplicados, contagem: dedupContagem });
-  }
-
-  if (detectados.length === 0) {
-    notificarPopup(`💥 Nenhuma cota disponível no momento...`);
-    const sessIdle = await chrome.storage.session.get(["ciclosVazios"]);
-    const novosVazios = Math.min(Number(sessIdle.ciclosVazios || 0) + 1, IDLE_MAX_CICLOS);
-    await chrome.storage.session.set({ ciclosVazios: novosVazios });
-    return;
-  }
-
-  // Vagas detectadas → reset idle counter
-  await chrome.storage.session.set({ ciclosVazios: 0 });
-
-  const lista = Object.keys(gruposAlvo).sort().join(", ");
-  notificarPopup(`🔍 Buscando por cotas: ${lista}...`);
-
-  const resultados = await Promise.allSettled(
-    detectados.map(d =>
-      reservarComLimite(d.grupo, uid, eid, d.grupoId, d.limite, reservasPorGrupo, stored.MODO_TESTE)
-    )
-  );
-  telemetria("cycle.end", {
-    duracaoMs: Date.now() - cycleStart,
-    detectados: detectados.length,
-    resultados: resultados.map(r => r.status === "fulfilled"
-      ? { ok: true, ...r.value }
-      : { ok: false, erro: (r.reason && r.reason.message) || String(r.reason) })
-  });
-  await flushTelemetria();
-  const fechado = resultados.find(r =>
-    r.status === "rejected" && r.reason && r.reason.message === "SISTEMA_FECHADO"
-  );
-  if (fechado) throw fechado.reason;
+  if (sistemaFechadoErr) throw sistemaFechadoErr;
 }
 
 async function dormirAteAbertura() {
@@ -787,12 +1047,21 @@ async function dormirAteAbertura() {
 }
 
 async function runPollingLoop() {
-  const { isRunning, nextRunAt } = await chrome.storage.session.get(["isRunning", "nextRunAt"]);
-  if (!isRunning) return;
+  // M1: 1 batch read em vez de 4× session.get separados
+  const sess = await chrome.storage.session.get([
+    "isRunning", "nextRunAt",
+    "turnstileBloqueado", "turnstileBloqueadoAte",
+    "circuitAberto",
+    "sistemaFechadoLogged"
+  ]);
+  if (!sess.isRunning) return;
+
+  // H3: tenta restaurar batch persistido em SW kill prévia (no-op se vazio)
+  await flushTelemetria().catch(() => {});
 
   // State machine guard — respeita o próximo schedule independente de quem disparou (alarm vs setTimeout)
-  if (nextRunAt && Date.now() < nextRunAt) {
-    const restanteMs = nextRunAt - Date.now();
+  if (sess.nextRunAt && Date.now() < sess.nextRunAt) {
+    const restanteMs = sess.nextRunAt - Date.now();
     setTimeout(runPollingLoop, Math.min(restanteMs, MAX_SETTIMEOUT_MS));
     return;
   }
@@ -800,26 +1069,24 @@ async function runPollingLoop() {
   const { MODO_TESTE } = await chrome.storage.local.get(["MODO_TESTE"]);
 
   // Turnstile interativo — robô pausado até cliente resolver no portal (ou expirar)
-  const sessTs = await chrome.storage.session.get(["turnstileBloqueado", "turnstileBloqueadoAte"]);
-  if (sessTs.turnstileBloqueado && sessTs.turnstileBloqueadoAte && Date.now() < sessTs.turnstileBloqueadoAte) {
-    const restanteMs = sessTs.turnstileBloqueadoAte - Date.now();
+  if (sess.turnstileBloqueado && sess.turnstileBloqueadoAte && Date.now() < sess.turnstileBloqueadoAte) {
+    const restanteMs = sess.turnstileBloqueadoAte - Date.now();
     setTimeout(runPollingLoop, Math.min(restanteMs, MAX_SETTIMEOUT_MS));
     return;
   }
-  if (sessTs.turnstileBloqueado) {
+  if (sess.turnstileBloqueado) {
     await chrome.storage.session.set({ turnstileBloqueado: false, turnstileBloqueadoAte: null });
     notificarPopup(`✅ Pausa por Turnstile encerrada. Retomando.`);
   }
 
   // Circuit breaker — verifica antes de qualquer request
-  const sessCb = await chrome.storage.session.get(["circuitAberto"]);
-  if (sessCb.circuitAberto && Date.now() < sessCb.circuitAberto) {
-    const restanteMs = sessCb.circuitAberto - Date.now();
+  if (sess.circuitAberto && Date.now() < sess.circuitAberto) {
+    const restanteMs = sess.circuitAberto - Date.now();
     notificarPopup(`🛑 Circuit breaker aberto. Próxima tentativa em ${(restanteMs/1000).toFixed(0)}s`);
     await agendarProximoCiclo(restanteMs);
     return;
   }
-  if (sessCb.circuitAberto && Date.now() >= sessCb.circuitAberto) {
+  if (sess.circuitAberto && Date.now() >= sess.circuitAberto) {
     await chrome.storage.session.set({ circuitAberto: null, hitsRecentes: [] });
     notificarPopup(`✅ Circuit breaker fechado. Retomando.`);
   }
@@ -831,8 +1098,7 @@ async function runPollingLoop() {
   }
 
   // Transição fechado → aberto: avisa retomada
-  const sessF = await chrome.storage.session.get(["sistemaFechadoLogged"]);
-  if (sessF.sistemaFechadoLogged) {
+  if (sess.sistemaFechadoLogged) {
     const { USUARIO } = await chrome.storage.local.get(["USUARIO"]);
     const usuarioFmt = usuarioExibicao(USUARIO);
     const agora = formatarDataBR(new Date().toISOString());
@@ -842,51 +1108,88 @@ async function runPollingLoop() {
     await chrome.storage.session.set({ sistemaFechadoLogged: false });
   }
 
-  try {
-    await runMonitorCycle();
-  } catch (error) {
-    if (error.message === "SISTEMA_FECHADO") {
-      await chrome.storage.session.set({ sistemaFechadoLogged: false });
-      await dormirAteAbertura();
-      return;
-    }
-
-    if (error.message === "RATE_LIMIT") {
-      const baseWait = error.cloudflare1015
-        ? CLOUDFLARE_1015_BACKOFF_SEC
-        : Math.max(error.retryAfterSec || 0, RATE_LIMIT_BACKOFF_SEC);
-      const fonte = error.cloudflare1015 ? "🔥 Cloudflare 1015" : `⛔ Rate limit (HTTP ${error.status || 429})`;
-      const msg = `${fonte} — pausando ${baseWait}s antes de retry`;
-      notificarPopup(msg);
-      await telegramNotify(msg);
-      await agendarProximoCiclo(baseWait * 1000);
-      return;
-    }
-
-    console.error("❌ Erro no ciclo:", error.message);
-    notificarPopup(`❌ Erro: ${error.message}`);
-    await telegramNotify(`❌ Erro no robô: ${error.message}`);
-
-    if (error.message.includes("LOGIN_FALHOU") || error.message.includes("HTTP 401")) {
-      await chrome.storage.local.remove(["idUsuario", "idEmpresa"]);
-    }
+  // M9: invalida sessão Canopus se mais velha que TTL — pega caso "robô voltou
+  // do SW kill, sessão pode ter expirado no backend"
+  const ID_USUARIO_TTL_MS = 6 * 60 * 60 * 1000; // 6h
+  const { idUsuarioObtidoEm } = await chrome.storage.local.get(["idUsuarioObtidoEm"]);
+  if (idUsuarioObtidoEm && Date.now() - idUsuarioObtidoEm > ID_USUARIO_TTL_MS) {
+    await chrome.storage.local.remove(["idUsuario", "idEmpresa", "idUsuarioObtidoEm"]);
+    notificarPopup("🔄 Sessão Canopus expirada (>6h). Re-autenticando no próximo ciclo.");
   }
 
-  const { currentMin, currentMax } = await ajustarDelayDinamico();
+  // Fix 9: mutex pra evitar reentrância (setTimeout + chrome.alarms disparam paralelo).
+  // Sem isso, 2 ciclos rodam simultâneo → 2× requests à API → acelera bloqueio Cloudflare.
+  const CYCLE_MAX_MS = 90_000;
+  const sessLock = await chrome.storage.session.get(["cycleRunning", "cycleRunningSince"]);
+  const lockAgora = Date.now();
+  if (sessLock.cycleRunning && sessLock.cycleRunningSince && (lockAgora - sessLock.cycleRunningSince) < CYCLE_MAX_MS) {
+    telemetria("cycle.skip_reentry", { decorridoMs: lockAgora - sessLock.cycleRunningSince });
+    return;
+  }
+  await chrome.storage.session.set({ cycleRunning: true, cycleRunningSince: lockAgora });
 
-  // Smart idle multiplier
-  const { ciclosVazios = 0 } = await chrome.storage.session.get(["ciclosVazios"]);
-  const idleMultiplier = 1 + IDLE_INCREMENT * Math.min(Number(ciclosVazios), IDLE_MAX_CICLOS);
+  try {
+    try {
+      await runMonitorCycle();
+    } catch (error) {
+      if (error.message === "SISTEMA_FECHADO") {
+        await chrome.storage.session.set({ sistemaFechadoLogged: false });
+        await dormirAteAbertura();
+        return;
+      }
 
-  // Jitter triangular (bias suave pro centro do intervalo)
-  const u = Math.random();
-  const triangular = u < 0.5
-    ? Math.sqrt(u * 0.5)
-    : 1 - Math.sqrt((1 - u) * 0.5);
-  const baseDelay = currentMin + triangular * Math.max(0, currentMax - currentMin);
-  const delay = baseDelay * idleMultiplier;
+      if (error.message === "IP_BANIDO") {
+        // Cloudflare baniu o IP do cliente. Não dá retry. Para tudo e alerta crítico.
+        const msg = `🚫 IP BANIDO pelo Cloudflare (HTTP ${error.status}). Robô parado. Cliente precisa esperar 24h+ ou trocar de IP/rede.`;
+        notificarPopup(msg);
+        await registrarUltimoErroPersistente(`IP banido (HTTP ${error.status})`);
+        await telegramNotify(msg);
+        telemetria("sw.lifecycle", { event: "stopped_ip_banned", body: error.body });
+        await flushTelemetria();
+        await pararMonitoramento();
+        return;
+      }
 
-  await agendarProximoCiclo(delay * 1000);
+      if (error.message === "RATE_LIMIT") {
+        const baseWait = error.cloudflare1015
+          ? CLOUDFLARE_1015_BACKOFF_SEC
+          : Math.max(error.retryAfterSec || 0, RATE_LIMIT_BACKOFF_SEC);
+        const fonte = error.cloudflare1015 ? "🔥 Cloudflare 1015" : `⛔ Rate limit (HTTP ${error.status || 429})`;
+        const msg = `${fonte} — pausando ${baseWait}s antes de retry`;
+        notificarPopup(msg);
+        await telegramNotify(msg);
+        await agendarProximoCiclo(baseWait * 1000);
+        return;
+      }
+
+      console.error("❌ Erro no ciclo:", error.message);
+      notificarPopup(`❌ Erro: ${error.message}`);
+      await registrarUltimoErroPersistente(`Erro: ${error.message}`);
+      await telegramNotify(`❌ Erro no robô: ${error.message}`);
+
+      if (error.message.includes("LOGIN_FALHOU") || error.message.includes("HTTP 401")) {
+        await chrome.storage.local.remove(["idUsuario", "idEmpresa", "idUsuarioObtidoEm"]);
+      }
+    }
+
+    const { currentMin, currentMax } = await ajustarDelayDinamico();
+
+    // Smart idle multiplier
+    const { ciclosVazios = 0 } = await chrome.storage.session.get(["ciclosVazios"]);
+    const idleMultiplier = 1 + IDLE_INCREMENT * Math.min(Number(ciclosVazios), IDLE_MAX_CICLOS);
+
+    // Jitter triangular (bias suave pro centro do intervalo)
+    const u = Math.random();
+    const triangular = u < 0.5
+      ? Math.sqrt(u * 0.5)
+      : 1 - Math.sqrt((1 - u) * 0.5);
+    const baseDelay = currentMin + triangular * Math.max(0, currentMax - currentMin);
+    const delay = baseDelay * idleMultiplier;
+
+    await agendarProximoCiclo(delay * 1000);
+  } finally {
+    await chrome.storage.session.set({ cycleRunning: false, cycleRunningSince: null });
+  }
 }
 
 async function iniciarMonitoramento() {
@@ -928,10 +1231,12 @@ async function iniciarMonitoramento() {
 async function pararMonitoramento() {
   await chrome.storage.session.set({ isRunning: false });
   await chrome.alarms.clear(alarmName);
-  await chrome.storage.local.remove(["idUsuario", "idEmpresa"]);
+  // M9: mantemos idUsuario/idEmpresa entre stops — TTL no runPollingLoop invalida quando >6h
+  await chrome.storage.local.remove(["idUsuario", "idEmpresa", "idUsuarioObtidoEm"]);
   notificarPopup("⏹ Monitoramento parado");
   telemetria("sw.lifecycle", { event: "stopped" });
   await flushTelemetria();
+  await persistirBatchPendente();
 }
 
 // Alarm como fallback: reativa loop se SW foi encerrado pelo browser.
@@ -981,11 +1286,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message.action === "clear_telemetria_buffer") {
-    TELEMETRIA_BATCH.length = 0;
-    if (TELEMETRIA_FLUSH_TIMER) { clearTimeout(TELEMETRIA_FLUSH_TIMER); TELEMETRIA_FLUSH_TIMER = null; }
-    chrome.storage.local.set({ telemetria_buffer: [] })
-      .then(() => sendResponse({ ok: true }))
-      .catch(e => sendResponse({ ok: false, error: e.message }));
+    // Fix 14 B2: aguarda escrita antes de responder; sem isso sendResponse retorna
+    // antes de storage gravar e clear pode ser perdido em SW kill subsequente.
+    (async () => {
+      TELEMETRIA_BATCH.length = 0;
+      if (TELEMETRIA_FLUSH_TIMER) { clearTimeout(TELEMETRIA_FLUSH_TIMER); TELEMETRIA_FLUSH_TIMER = null; }
+      try {
+        await Promise.all([
+          chrome.storage.local.set({ telemetria_buffer: [] }),
+          chrome.storage.session.set({ pending_telemetria_batch: [] })
+        ]);
+        sendResponse({ ok: true });
+      } catch (e) {
+        sendResponse({ ok: false, error: e.message });
+      }
+    })();
     return true;
   }
   if (message.action === "flush_telemetria") {
@@ -998,6 +1313,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+});
+
+// H1: invalida cache da flag quando popup muda valor em storage
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes.TELEMETRIA_LIGADA) {
+    TELEMETRIA_LIGADA_CACHE = !!changes.TELEMETRIA_LIGADA.newValue;
+  }
 });
 
 // Exports para testes automatizados (ignorado no browser)
@@ -1026,6 +1348,10 @@ if (typeof module !== "undefined") {
     sanitize,
     telemetria,
     flushTelemetria,
+    persistirBatchPendente,
+    getTelemetriaLigada,
+    __resetTelemetriaCache,
+    __resetTelemetriaBatch,
     telegramNotify,
     sleep,
     BUCKET_CAPACITY,

@@ -9,7 +9,8 @@ global.chrome = {
       get: jest.fn().mockResolvedValue({}),
       set: jest.fn().mockResolvedValue(undefined),
       remove: jest.fn().mockResolvedValue(undefined)
-    }
+    },
+    onChanged: { addListener: jest.fn() }
   },
   alarms: {
     create: jest.fn().mockResolvedValue(undefined),
@@ -23,7 +24,14 @@ global.chrome = {
   },
   tabs: {
     query: jest.fn().mockResolvedValue([]),
-    sendMessage: jest.fn().mockResolvedValue(undefined)
+    sendMessage: jest.fn().mockResolvedValue(undefined),
+    update: jest.fn().mockResolvedValue(undefined)
+  },
+  windows: {
+    update: jest.fn().mockResolvedValue(undefined)
+  },
+  scripting: {
+    executeScript: jest.fn().mockResolvedValue([])
   },
   sidePanel: {
     setPanelBehavior: jest.fn().mockResolvedValue(undefined)

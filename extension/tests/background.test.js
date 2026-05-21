@@ -181,6 +181,30 @@ describe("apiPost", () => {
       retryAfterSec: 45
     });
   });
+
+  test("Fix 6.3: error_code 1106 → lança IP_BANIDO (sem retry)", async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false, status: 403,
+      headers: { get: () => null },
+      clone: function() { return { text: async () => '{"error_code":1106,"error_name":"ipv6_banned","title":"Access denied"}' }; }
+    });
+    await expect(apiPost("/test", {})).rejects.toMatchObject({
+      message: "IP_BANIDO",
+      status: 403
+    });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  test("Fix 6.3: body com ipv6_banned → IP_BANIDO mesmo com status 429", async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false, status: 429,
+      headers: { get: () => null },
+      clone: function() { return { text: async () => 'Access denied. ipv6_banned' }; }
+    });
+    await expect(apiPost("/test", {})).rejects.toMatchObject({
+      message: "IP_BANIDO"
+    });
+  });
 });
 
 // ─── fazerLogin ─────────────────────────────────────────────────────────────
@@ -291,12 +315,33 @@ describe("reservarComLimite (via content-script)", () => {
     mockTabAberta({ ok: true, reserva: {} });
     await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
     expect(chrome.tabs.query).toHaveBeenCalledWith({
-      url: "https://parceiros.consorciocanopus.com.br/*"
+      url: "https://parceiros.consorciocanopus.com.br/apps/*"
     });
     expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(
       42,
       expect.objectContaining({ action: "reservar_via_dom", grupo: mockGrupo })
     );
+  });
+
+  test("Fix 5: foca aba antes de mandar reservar_via_dom", async () => {
+    chrome.tabs.query.mockResolvedValue([{ id: 42, windowId: 7 }]);
+    chrome.tabs.sendMessage.mockResolvedValue({ ok: true, reserva: {} });
+    await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
+    expect(chrome.tabs.update).toHaveBeenCalledWith(42, { active: true });
+    expect(chrome.windows.update).toHaveBeenCalledWith(7, { focused: true });
+    // Foco DEVE acontecer antes do sendMessage
+    const focusOrder = chrome.tabs.update.mock.invocationCallOrder[0];
+    const sendOrder = chrome.tabs.sendMessage.mock.invocationCallOrder[0];
+    expect(focusOrder).toBeLessThan(sendOrder);
+  });
+
+  test("Fix 5: erro ao focar aba não bloqueia reserva", async () => {
+    chrome.tabs.query.mockResolvedValue([{ id: 42, windowId: 7 }]);
+    chrome.tabs.update.mockRejectedValueOnce(new Error("Tab not found"));
+    chrome.tabs.sendMessage.mockResolvedValue({ ok: true, reserva: {} });
+    const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
+    expect(chrome.tabs.sendMessage).toHaveBeenCalled();
+    expect(out).toMatchObject({ reservou: true });
   });
 
   test("sem aba do portal — não corrompe contador, retorna semAba", async () => {
@@ -387,19 +432,132 @@ describe("reservarComLimite (via content-script)", () => {
     );
   });
 
-  test("content-script não injetado — orienta cliente a recarregar aba", async () => {
-    chrome.tabs.query.mockResolvedValue([{ id: 42 }]);
+  test("content-script não injetado — orienta cliente a recarregar aba (recuperação falhou)", async () => {
+    chrome.tabs.query.mockResolvedValue([{ id: 42, url: "https://parceiros.consorciocanopus.com.br/apps/dashboard" }]);
     chrome.tabs.sendMessage.mockRejectedValue(
       new Error("Could not establish connection. Receiving end does not exist.")
     );
+    chrome.scripting.executeScript.mockRejectedValue(new Error("inject fail"));
     const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
     expect(out).toMatchObject({ reservou: false, erro: "CONTENT_SCRIPT_NAO_INJETADO" });
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "log",
-        text: expect.stringMatching(/Recarregue a aba.*F5/)
+        text: expect.stringMatching(/abra parceiros|Recarregue/i)
       })
     );
+  });
+
+  test("Fix 11: content-script ausente em /apps/* → injeta via scripting + retry sucesso", async () => {
+    chrome.tabs.query.mockResolvedValue([{ id: 42, url: "https://parceiros.consorciocanopus.com.br/apps/reservas" }]);
+    let callCount = 0;
+    chrome.tabs.sendMessage.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) {
+        throw new Error("Could not establish connection. Receiving end does not exist.");
+      }
+      return { ok: true, reserva: {} };
+    });
+    chrome.scripting.executeScript.mockResolvedValue([{ result: undefined }]);
+    const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
+    expect(chrome.scripting.executeScript).toHaveBeenCalledWith({
+      target: { tabId: 42 },
+      files: ["content.js"]
+    });
+    expect(out).toMatchObject({ reservou: true });
+  });
+
+  test("Fix 11: content-script ausente em rota fora de /apps/* → navega pra /apps/reservas", async () => {
+    chrome.tabs.query.mockResolvedValue([{ id: 42, url: "https://parceiros.consorciocanopus.com.br/pages/auth/login" }]);
+    let callCount = 0;
+    chrome.tabs.sendMessage.mockImplementation(async () => {
+      callCount++;
+      // 1ª chamada (reservar_via_dom) falha → tenta recuperar via navigate
+      // 2ª+ chamadas (ping no aguardarContentScriptVivo) sucesso → vivo
+      // Última chamada (reservar_via_dom retry) sucesso
+      if (callCount === 1) {
+        throw new Error("Could not establish connection. Receiving end does not exist.");
+      }
+      if (callCount === 2) return { ok: true, alive: true };
+      return { ok: true, reserva: {} };
+    });
+    await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
+    expect(chrome.tabs.update).toHaveBeenCalledWith(42, {
+      url: "https://parceiros.consorciocanopus.com.br/apps/reservas"
+    });
+  });
+});
+
+// ─── Fix 14 E: edge cases adicionais ─────────────────────────────────────────
+
+describe("Fix 14: race em flushTelemetria + telemetria concurrent", () => {
+  const { telemetria, flushTelemetria, __resetTelemetriaCache, __resetTelemetriaBatch, TELEMETRIA_BATCH_MAX } = require('../background.js');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    __resetTelemetriaCache();
+    __resetTelemetriaBatch();
+    chrome.storage.local.get.mockResolvedValue({ TELEMETRIA_LIGADA: true, telemetria_buffer: [] });
+    chrome.storage.local.set.mockResolvedValue(undefined);
+    chrome.storage.session.get.mockResolvedValue({});
+    chrome.storage.session.set.mockResolvedValue(undefined);
+    jest.spyOn(global, 'setTimeout').mockImplementation(() => 0);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  test("telemetria() durante flush não perde eventos (snapshot atomic via splice)", async () => {
+    // Adiciona 9 eventos (1 abaixo do batch max)
+    for (let i = 0; i < TELEMETRIA_BATCH_MAX - 1; i++) {
+      await telemetria("evento", { i });
+    }
+    // Dispara flush + telemetria em paralelo
+    const flushP = flushTelemetria();
+    await telemetria("durante_flush", { i: 99 });
+    await flushP;
+
+    // Os 9 originais devem ter sido escritos; o "durante_flush" pode estar em batch ou
+    // já no buffer dependendo do timing — mas NENHUM evento perdido
+    const allCalls = chrome.storage.local.set.mock.calls
+      .filter(c => c[0].telemetria_buffer)
+      .flatMap(c => c[0].telemetria_buffer);
+    const tipos = allCalls.map(e => e.tipo);
+    expect(tipos.filter(t => t === "evento").length).toBe(TELEMETRIA_BATCH_MAX - 1);
+  });
+});
+
+describe("Fix 14: tentarRecuperarContentScript dedicated tests", () => {
+  // Cobre apenas o caminho via reservarComLimite (função interna não exportada).
+  // Edge cases já cobertos no describe "reservarComLimite (via content-script)".
+  // Aqui validamos comportamento quando aguardarContentScriptVivo retorna false.
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSleep();
+    chrome.storage.local.get.mockResolvedValue({
+      USUARIO: "12345", GRUPOS_CONFIG: "009113:3",
+      TELEGRAM_TOKEN: "", TELEGRAM_CHAT_ID: ""
+    });
+    chrome.storage.session.get.mockResolvedValue({});
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  test("scripting.executeScript falha → fallback message + retorna CONTENT_SCRIPT_NAO_INJETADO", async () => {
+    chrome.tabs.query.mockResolvedValue([{ id: 42, url: "https://parceiros.consorciocanopus.com.br/apps/reservas" }]);
+    chrome.tabs.sendMessage.mockRejectedValue(new Error("Receiving end does not exist"));
+    chrome.scripting.executeScript.mockRejectedValue(new Error("inject permission denied"));
+    const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
+    expect(out).toMatchObject({ reservou: false, erro: "CONTENT_SCRIPT_NAO_INJETADO" });
+  });
+
+  test("URL não-portal (e.g., outro site) → não navega pra reservas, retorna CONTENT_SCRIPT_NAO_INJETADO", async () => {
+    chrome.tabs.query.mockResolvedValue([{ id: 42, url: "https://google.com" }]);
+    chrome.tabs.sendMessage.mockRejectedValue(new Error("Could not establish connection"));
+    const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
+    expect(out).toMatchObject({ erro: "CONTENT_SCRIPT_NAO_INJETADO" });
+    // tabs.update pode ser chamado pra focar aba ({ active: true }) mas NUNCA pra navegar URL
+    const navegou = chrome.tabs.update.mock.calls.some(c => c[1] && c[1].url);
+    expect(navegou).toBe(false);
+    expect(chrome.scripting.executeScript).not.toHaveBeenCalled();
   });
 });
 
@@ -560,7 +718,7 @@ describe("runMonitorCycle", () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  test("múltiplos grupos — falha em um não cancela outros (Promise.allSettled)", async () => {
+  test("múltiplos grupos — falha em um não cancela outros (sequencial)", async () => {
     const grupo2 = { ...mockGrupo, CD_Grupo: "009114", ID_Grupo: 67890, ID_Produto: 3, NM_Produto: "Outro" };
     storageWith({ GRUPOS_CONFIG: "009113:3,009114:3" });
 
@@ -570,6 +728,40 @@ describe("runMonitorCycle", () => {
       .mockResolvedValue({ ok: true, reserva: {} });
 
     await expect(runMonitorCycle()).resolves.toBeUndefined();
+  });
+
+  test("Fix 6.1: múltiplos grupos rodam SERIAL (não paralelo)", async () => {
+    const grupo2 = { ...mockGrupo, CD_Grupo: "009114", ID_Grupo: 67890, ID_Produto: 3, NM_Produto: "Outro" };
+    storageWith({ GRUPOS_CONFIG: "009113:3,009114:3" });
+    global.fetch = jest.fn().mockResolvedValue(fetchGruposOk([mockGrupo, grupo2]));
+
+    const callOrder = [];
+    chrome.tabs.sendMessage.mockImplementation(async (tabId, msg) => {
+      callOrder.push({ at: "start", grupoId: msg.grupo.CD_Grupo });
+      await new Promise(r => setTimeout(r, 10));
+      callOrder.push({ at: "end", grupoId: msg.grupo.CD_Grupo });
+      return { ok: true, reserva: {} };
+    });
+
+    await runMonitorCycle();
+
+    // Cada grupo deve completar antes do próximo começar
+    expect(callOrder[0]).toEqual({ at: "start", grupoId: "009113" });
+    expect(callOrder[1]).toEqual({ at: "end",   grupoId: "009113" });
+    expect(callOrder[2]).toEqual({ at: "start", grupoId: "009114" });
+    expect(callOrder[3]).toEqual({ at: "end",   grupoId: "009114" });
+  });
+
+  test("Fix 6.1: SISTEMA_FECHADO no 1º grupo interrompe sequencia (não chama 2º)", async () => {
+    const grupo2 = { ...mockGrupo, CD_Grupo: "009114", ID_Grupo: 67890, ID_Produto: 3, NM_Produto: "Outro" };
+    storageWith({ GRUPOS_CONFIG: "009113:3,009114:3" });
+    global.fetch = jest.fn().mockResolvedValue(fetchGruposOk([mockGrupo, grupo2]));
+    chrome.tabs.sendMessage.mockResolvedValueOnce({
+      ok: false,
+      details: "Há uma restrição vigente para efetuar reservas neste momento."
+    });
+    await expect(runMonitorCycle()).rejects.toThrow("SISTEMA_FECHADO");
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledTimes(1); // 2º não foi chamado
   });
 
   test("modo teste — não chama content-script", async () => {
@@ -605,6 +797,27 @@ describe("runMonitorCycle", () => {
         text: expect.stringContaining("💥 Nenhuma cota disponível")
       })
     );
+  });
+
+  test("Fix 15: ciclo vazio ainda incrementa metricasDia.ciclos + .consultas", async () => {
+    storageWith({ GRUPOS_CONFIG: "009999:3" });
+    global.fetch = jest.fn().mockResolvedValue(fetchGruposOk([mockGrupo]));
+
+    // Capture writes em storage.local pra inspecionar metricasDia
+    const writes = [];
+    chrome.storage.local.set.mockImplementation(async (obj) => { writes.push(obj); });
+
+    await runMonitorCycle();
+
+    // Espera-se 1 write com metricasDia incrementado (ciclos=1, consultas=1, reservas=0)
+    const metricasWrite = writes.find(w => w.metricasDia);
+    expect(metricasWrite).toBeDefined();
+    const diaKey = Object.keys(metricasWrite.metricasDia)[0];
+    expect(metricasWrite.metricasDia[diaKey]).toMatchObject({
+      ciclos: 1,
+      consultas: 1, // 1 = listGruposReserva; +0 = sem detectados (filtrados)
+      reservas: 0
+    });
   });
 
   test("filtra grupos com ID_Produto em produtosBloqueados", async () => {
@@ -1265,13 +1478,16 @@ describe("Telemetria — sanitize", () => {
 });
 
 describe("Telemetria — telemetria() e flushTelemetria()", () => {
-  const { telemetria, flushTelemetria, TELEMETRIA_MAX_ENTRIES, TELEMETRIA_BATCH_MAX } = require('../background.js');
+  const { telemetria, flushTelemetria, TELEMETRIA_MAX_ENTRIES, TELEMETRIA_BATCH_MAX, __resetTelemetriaCache, __resetTelemetriaBatch } = require('../background.js');
 
   beforeEach(() => {
     jest.clearAllMocks();
     mockSleep();
+    __resetTelemetriaCache();
+    __resetTelemetriaBatch();
     chrome.storage.local.get.mockResolvedValue({});
     chrome.storage.local.set.mockResolvedValue(undefined);
+    chrome.storage.session.get.mockResolvedValue({});
   });
   afterEach(() => jest.restoreAllMocks());
 
@@ -1318,5 +1534,172 @@ describe("Telemetria — telemetria() e flushTelemetria()", () => {
     // últimos eventos novos no final
     const ultimas = setCall[0].telemetria_buffer.slice(-TELEMETRIA_BATCH_MAX);
     ultimas.forEach(e => expect(e.tipo).toBe("novo"));
+  });
+
+  test("H1: cache TELEMETRIA_LIGADA — segunda chamada não lê storage", async () => {
+    const { getTelemetriaLigada, __resetTelemetriaCache } = require('../background.js');
+    __resetTelemetriaCache();
+    chrome.storage.local.get.mockResolvedValue({ TELEMETRIA_LIGADA: true });
+    const v1 = await getTelemetriaLigada();
+    expect(v1).toBe(true);
+    chrome.storage.local.get.mockClear();
+    const v2 = await getTelemetriaLigada();
+    expect(v2).toBe(true);
+    expect(chrome.storage.local.get).not.toHaveBeenCalled();
+  });
+
+  test("H3: persistirBatchPendente salva entries em storage.session", async () => {
+    const { persistirBatchPendente, telemetria, __resetTelemetriaCache } = require('../background.js');
+    __resetTelemetriaCache();
+    chrome.storage.local.get.mockResolvedValue({ TELEMETRIA_LIGADA: true });
+    chrome.storage.session.get.mockResolvedValue({});
+    // Ignora callback do setTimeout que faria flush precoce do batch
+    setTimeout.mockImplementation(() => 0);
+    await telemetria("evento_pre_kill", { foo: 1 });
+    await persistirBatchPendente();
+    const sessSet = chrome.storage.session.set.mock.calls.find(c => c[0].pending_telemetria_batch);
+    expect(sessSet).toBeDefined();
+    expect(sessSet[0].pending_telemetria_batch.length).toBeGreaterThan(0);
+  });
+
+  test("H3: flushTelemetria recupera pending_telemetria_batch após SW restart", async () => {
+    const { flushTelemetria, __resetTelemetriaCache } = require('../background.js');
+    __resetTelemetriaCache();
+    chrome.storage.local.get.mockResolvedValue({ TELEMETRIA_LIGADA: true, telemetria_buffer: [] });
+    chrome.storage.session.get.mockResolvedValue({
+      pending_telemetria_batch: [{ t: 1, tipo: "antes_kill", dados: {} }]
+    });
+    await flushTelemetria();
+    const localSet = chrome.storage.local.set.mock.calls.find(c => c[0].telemetria_buffer);
+    expect(localSet).toBeDefined();
+    expect(localSet[0].telemetria_buffer).toEqual([
+      expect.objectContaining({ tipo: "antes_kill" })
+    ]);
+  });
+});
+
+describe("Telegram timeout (H5)", () => {
+  const { telegramNotify } = require('../background.js');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    chrome.storage.local.get.mockResolvedValue({
+      TELEGRAM_TOKEN: "BOT", TELEGRAM_CHAT_ID: "CHAT"
+    });
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  test("fetch recebe AbortSignal", async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: true });
+    await telegramNotify("teste");
+    expect(fetch).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
+  });
+
+  test("não lança quando fetch abortado por timeout", async () => {
+    global.fetch = jest.fn().mockRejectedValue(new DOMException("aborted", "AbortError"));
+    await expect(telegramNotify("teste")).resolves.toBeUndefined();
+  });
+});
+
+// ─── Fix 9: mutex em runPollingLoop ──────────────────────────────────────────
+
+describe("Fix 9 — mutex runPollingLoop", () => {
+  const { runPollingLoop } = require('../background.js');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // setTimeout no-op pra evitar recursão infinita do agendarProximoCiclo chamando runPollingLoop
+    jest.spyOn(global, 'setTimeout').mockImplementation(() => 0);
+    chrome.tabs.query.mockResolvedValue([{ id: 42, windowId: 7 }]);
+    chrome.tabs.sendMessage.mockResolvedValue({ ok: true, reserva: {} });
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  test("2 chamadas concorrentes: segunda detecta cycleRunning e sai sem rodar runMonitorCycle", async () => {
+    chrome.storage.local.get.mockImplementation(async (keys) => {
+      if (Array.isArray(keys) && keys.includes("GRUPOS_CONFIG")) {
+        return {
+          idUsuario: 99, idEmpresa: 1, USUARIO: "12345",
+          GRUPOS_CONFIG: "009113:3", MODO_TESTE: true,
+          reservasPorGrupo: {}, TELEGRAM_TOKEN: "", TELEGRAM_CHAT_ID: ""
+        };
+      }
+      return {};
+    });
+
+    // Primeiro chamador: passa pelos guards, adquire lock
+    chrome.storage.session.get.mockImplementation(async (keys) => {
+      if (Array.isArray(keys) && keys.includes("cycleRunning")) {
+        // Já tem cycle rodando (simula reentrância) — lockedAt agora pra ainda estar dentro de 90s
+        return { cycleRunning: true, cycleRunningSince: Date.now() };
+      }
+      return { isRunning: true };
+    });
+
+    global.fetch = jest.fn();
+    await runPollingLoop();
+
+    // Verifica que NÃO chamou runMonitorCycle (não houve apiPost de listGruposReserva)
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  test("lock stale (>90s) é ignorado, novo ciclo passa", async () => {
+    chrome.storage.local.get.mockImplementation(async (keys) => {
+      if (Array.isArray(keys) && keys.includes("GRUPOS_CONFIG")) {
+        return {
+          idUsuario: 99, idEmpresa: 1, USUARIO: "12345",
+          GRUPOS_CONFIG: "009999:3", MODO_TESTE: true,
+          reservasPorGrupo: {}, TELEGRAM_TOKEN: "", TELEGRAM_CHAT_ID: ""
+        };
+      }
+      return {};
+    });
+
+    chrome.storage.session.get.mockImplementation(async (keys) => {
+      if (Array.isArray(keys) && keys.includes("cycleRunning")) {
+        return { cycleRunning: true, cycleRunningSince: Date.now() - 120_000 }; // 2min atrás
+      }
+      return { isRunning: true };
+    });
+
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({ success: true, data: [[]] })
+    });
+
+    await runPollingLoop();
+
+    // Lock stale → fetch foi chamado (passou pelo mutex)
+    expect(fetch).toHaveBeenCalled();
+  });
+
+  test("lock é liberado no finally (cycleRunning volta a false)", async () => {
+    chrome.storage.local.get.mockImplementation(async (keys) => {
+      if (Array.isArray(keys) && keys.includes("GRUPOS_CONFIG")) {
+        return {
+          idUsuario: 99, idEmpresa: 1, USUARIO: "12345",
+          GRUPOS_CONFIG: "009999:3", MODO_TESTE: true,
+          reservasPorGrupo: {}, TELEGRAM_TOKEN: "", TELEGRAM_CHAT_ID: ""
+        };
+      }
+      return {};
+    });
+
+    chrome.storage.session.get.mockResolvedValue({ isRunning: true });
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({ success: true, data: [[]] })
+    });
+
+    await runPollingLoop();
+
+    // Verifica que cycleRunning foi setado pra false no finally
+    const lockReleased = chrome.storage.session.set.mock.calls.find(
+      c => c[0].cycleRunning === false
+    );
+    expect(lockReleased).toBeDefined();
   });
 });

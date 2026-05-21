@@ -1,12 +1,13 @@
 {
   "name": "canopus-reserva-robo",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Extensão Chrome para monitoramento e reserva automática de cotas no Portal Parceiros Canopus.",
   "main": "index.js",
   "scripts": {
     "build": "tailwindcss -i ./extension/src/input.css -o ./extension/popup.css --minify",
     "build:watch": "tailwindcss -i ./extension/src/input.css -o ./extension/popup.css --watch",
-    "test": "jest"
+    "test": "jest",
+    "visual": "node tests/visual-check.js"
   },
   "jest": {
     "testEnvironment": "node",
@@ -28,6 +29,12 @@
   "devDependencies": {
     "@tailwindcss/forms": "^0.5.11",
     "jest": "^30.4.2",
+    "jest-environment-jsdom": "^30.4.1",
+    "jsdom": "^29.1.1",
+    "playwright": "^1.60.0",
     "tailwindcss": "^3.4.19"
+  },
+  "dependencies": {
+    "chart.js": "^4.5.1"
   }
 }
