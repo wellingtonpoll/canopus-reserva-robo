@@ -9,7 +9,7 @@ Score atual e análise completa: ver discussão no histórico do projeto (`SCORE
 | ID | Título | Priority | Effort | Score | Status | Depends |
 |----|--------|----------|--------|-------|--------|---------|
 | 02 | [Publicar Chrome Web Store](./02-chrome-web-store.md) | P1 | L | +8 | backlog | — |
-| 03 | [Auto-login via cookie hijack](./03-auto-login-cookie-hijack.md) | P1 | M | +5 | backlog | — |
+| 03 | [Auto-login via cookie hijack](./03-auto-login-cookie-hijack.md) | P1 | M | +5 | backlog | 01 |
 | 07 | [Credenciais via OS keyring](./07-credenciais-os-keyring.md) | P1 | L | +5 | backlog | 06 |
 | 01 | [Modularizar background.js](./01-modularizar-background.md) | P2 | M | +8 | ✅ done | — |
 | 06 | [Installer cross-platform (macOS/Linux)](./06-installer-cross-platform.md) | P2 | L | +3 | backlog | — |
