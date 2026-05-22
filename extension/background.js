@@ -2,7 +2,7 @@
 // SW context (Chrome MV3): importScripts é síncrono e popula self.X
 // Node test context (Jest): chrome-mock.js shim do importScripts faz require + Object.assign(global)
 if (typeof importScripts !== "undefined") {
-  importScripts('lib/state.js', 'lib/format.js', 'lib/notifications.js', 'lib/horario.js', 'lib/telemetria.js', 'lib/telegram.js', 'lib/rate-limit.js');
+  importScripts('lib/state.js', 'lib/format.js', 'lib/notifications.js', 'lib/horario.js', 'lib/telemetria.js', 'lib/telegram.js', 'lib/rate-limit.js', 'lib/schedule.js');
 }
 if (typeof require !== "undefined" && typeof module !== "undefined") {
   Object.assign(global, require('./lib/state'));
@@ -12,6 +12,7 @@ if (typeof require !== "undefined" && typeof module !== "undefined") {
   Object.assign(global, require('./lib/telemetria'));
   Object.assign(global, require('./lib/telegram'));
   Object.assign(global, require('./lib/rate-limit'));
+  Object.assign(global, require('./lib/schedule'));
 }
 
 // Telemetria movida pra lib/telemetria.js (Spec 01) — getTelemetriaLigada,
@@ -19,13 +20,8 @@ if (typeof require !== "undefined" && typeof module !== "undefined") {
 
 // sleep movido pra lib/state.js (Spec 01)
 
-async function agendarProximoCiclo(ms) {
-  const at = Date.now() + ms;
-  await chrome.storage.session.set({ nextRunAt: at });
-  setTimeout(runPollingLoop, Math.min(ms, MAX_SETTIMEOUT_MS));
-}
-
 // tomarToken + registrarHitERateLimit movidos pra lib/rate-limit.js (Spec 01)
+// agendarProximoCiclo + ajustarDelayDinamico movidos pra lib/schedule.js (Spec 01)
 
 function getHeaders() {
   return {
@@ -145,40 +141,6 @@ async function apiPost(path, body, tentativaNet = 0) {
     latencyMs: Date.now() - reqStart
   });
   return json;
-}
-
-async function ajustarDelayDinamico() {
-  const { DELAY_MIN = 5, DELAY_MAX = 10 } = await chrome.storage.local.get(["DELAY_MIN", "DELAY_MAX"]);
-  const floorMin = Number(DELAY_MIN);
-  const floorMax = Number(DELAY_MAX);
-
-  const sess = (await chrome.storage.session.get(["rateLimitHit", "currentMin", "currentMax", "isRunning"])) || {};
-  if (!sess.isRunning) {
-    return { currentMin: floorMin, currentMax: floorMax };
-  }
-  let cMin = sess.currentMin != null ? Number(sess.currentMin) : floorMin;
-  let cMax = sess.currentMax != null ? Number(sess.currentMax) : floorMax;
-
-  if (sess.rateLimitHit) {
-    cMin = Math.min(cMin * RATE_LIMIT_BACKOFF_FACTOR, MAX_DYNAMIC_DELAY);
-    cMax = Math.min(cMax * RATE_LIMIT_BACKOFF_FACTOR, MAX_DYNAMIC_DELAY);
-    notificarPopup(`⚙️ Rate limit detectado → delay ajustado para ${cMin.toFixed(1)}-${cMax.toFixed(1)}s`);
-  } else {
-    const novoMin = cMin * SUCCESS_DECAY_FACTOR;
-    const novoMax = cMax * SUCCESS_DECAY_FACTOR;
-    cMin = Math.max(novoMin, floorMin);
-    cMax = Math.max(novoMax, floorMax);
-  }
-
-  if (cMax < cMin) cMax = cMin;
-
-  await chrome.storage.session.set({
-    currentMin: cMin,
-    currentMax: cMax,
-    rateLimitHit: false
-  });
-
-  return { currentMin: cMin, currentMax: cMax };
 }
 
 async function fazerLogin() {
@@ -1256,6 +1218,35 @@ chrome.storage.onChanged.addListener((changes, area) => {
     __setTelemetriaCacheValue(!!changes.TELEMETRIA_LIGADA.newValue);
   }
 });
+
+// Spec 01 (transição): expõe funções ainda em background.js no global pra que
+// libs já extraídas (schedule.js, etc) achem referências runtime via lookup.
+// Esse bloco some quando todas as funções estiverem em libs próprias.
+if (typeof self !== "undefined") {
+  Object.assign(self, {
+    runPollingLoop,
+    iniciarMonitoramento,
+    pararMonitoramento,
+    runMonitorCycle,
+    dormirAteAbertura,
+    reservarComLimite,
+    handleTurnstileChallenge,
+    limparBadgeTurnstile,
+    reservarViaTab,
+    garantirAbaPortal,
+    tentarRecuperarContentScript,
+    apiPost,
+    parseRetryAfter,
+    getHeaders,
+    fazerLogin,
+    buscarGrupos,
+    extrairGrupos,
+    extrairReserva,
+    parseGruposConfig,
+    removerGrupoDoConfig,
+    reservar
+  });
+}
 
 // Exports para testes automatizados (ignorado no browser)
 if (typeof module !== "undefined") {
