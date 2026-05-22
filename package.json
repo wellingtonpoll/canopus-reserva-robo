@@ -7,7 +7,8 @@
     "build": "tailwindcss -i ./extension/src/input.css -o ./extension/popup.css --minify",
     "build:watch": "tailwindcss -i ./extension/src/input.css -o ./extension/popup.css --watch",
     "test": "jest",
-    "visual": "node tests/visual-check.js"
+    "visual": "node tests/visual-check.js",
+    "screenshots": "node tests/screenshots-readme.js"
   },
   "jest": {
     "testEnvironment": "node",

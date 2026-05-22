@@ -13,6 +13,43 @@ Roda como um Side Panel persistente dentro do navegador, mantém sessão de logi
 
 ---
 
+## 📸 Capturas
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="docs/screenshots/01-operacoes.png" alt="Tela Operações em estado idle" width="280"><br>
+      <sub><b>Operações — idle</b></sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/screenshots/02-operacoes-rodando.png" alt="Tela Operações com robô rodando e logs reais" width="280"><br>
+      <sub><b>Operações — robô em execução</b></sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/screenshots/05-compact-notebook.png" alt="Layout compacto em notebook 360×620" width="280"><br>
+      <sub><b>Modo compacto (notebooks)</b></sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center">
+      <img src="docs/screenshots/03-historico.png" alt="Tela Histórico com 4 gráficos Chart.js × 30 dias" width="280"><br>
+      <sub><b>Histórico (30 dias)</b></sub>
+    </td>
+    <td align="center">
+      <img src="docs/screenshots/04-config.png" alt="Tela Configurações com credenciais Canopus + Telegram" width="280"><br>
+      <sub><b>Configurações</b></sub>
+    </td>
+    <td align="center">
+      <img src="docs/screenshots/demo-fluxo.gif" alt="Demo do fluxo: iniciar → detectar → reservar → sucesso" width="280"><br>
+      <sub><b>Fluxo completo (animado)</b></sub>
+    </td>
+  </tr>
+</table>
+
+> Screenshots gerados via Playwright headless com `chrome.*` APIs mockadas. Rode `npm run screenshots` pra regerar — útil quando UI muda.
+
+---
+
 ## 📦 Instalação
 
 Instalação automática em **2 passos** (Windows 10/11):
