@@ -48,6 +48,25 @@ body {
   color: #705d00;
   letter-spacing: 0.3px;
 }
+/* Opção D Lote C: botão pra abrir em janela própria (mais espaço em telas pequenas) */
+.btn-detach {
+  background: none;
+  border: none;
+  width: 32px;
+  height: 32px;
+  border-radius: 0.5rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #7e775f;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.2s, color 0.2s;
+}
+.btn-detach:hover { background: #f5f3f3; color: #4d4732; }
+.btn-detach .material-symbols-outlined { font-size: 18px; }
+/* Quando já em janela própria, esconde botão (popup.js seta body[data-detached="true"]) */
+body[data-detached="true"] .btn-detach { display: none; }
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -1035,3 +1054,84 @@ body[data-tab="config"]    [data-tab-content="config"] {
 
 /* Icon size helper */
 .icon-sm { font-size: 16px; }
+
+/* Opção D Lote B: campo Grupos compacto dentro do card-operacoes */
+.field-compact label {
+  font-size: 11px;
+  letter-spacing: 0.3px;
+  margin-bottom: 4px;
+}
+.field-compact input {
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.field-compact .field-hint {
+  font-size: 10.5px;
+  margin-top: 4px;
+  color: #7e775f;
+}
+
+/* ─── Opção D Lote A: responsivo pra telas pequenas (notebooks ~768px altura) ── */
+@media (max-height: 720px) {
+  .app-header { padding: 8px 14px; }
+  .header-avatar { width: 26px; height: 26px; }
+  .header-avatar .material-symbols-outlined { font-size: 15px; }
+  .app-title { font-size: 14px; }
+  .btn-detach { width: 28px; height: 28px; }
+  .btn-detach .material-symbols-outlined { font-size: 16px; }
+
+  .tab-btn { padding: 7px 6px; font-size: 11px; }
+  .tab-btn .material-symbols-outlined { font-size: 14px; }
+
+  .main-scroll { padding: 10px; gap: 8px; }
+
+  .card-operacoes { padding: 10px; gap: 8px; }
+  .card-operacoes-title { font-size: 14px; }
+  .status-pill-inline { padding: 3px 8px 3px 6px; font-size: 9.5px; }
+
+  .btn-xl { padding: 7px 6px; }
+  .btn-xl-icon { font-size: 18px; }
+  .btn-xl-label { font-size: 11px; letter-spacing: 0.5px; }
+  .btn-xl-row { gap: 8px; }
+
+  .field-compact label { font-size: 10px; margin-bottom: 2px; }
+  .field-compact input { padding: 6px 10px; font-size: 12px; }
+  .field-compact .field-hint { display: none; }
+
+  .logs-header { padding: 5px 8px; }
+  .logs-title-mono { font-size: 9.5px; }
+  .logs-dot { width: 7px; height: 7px; }
+  .logs-badge { font-size: 9px; padding: 2px 5px; }
+  [data-tab-content="operacoes"] .logs-card { min-height: 90px; }
+
+  .dashboard-summary { padding: 5px 8px; }
+  .metric-chip-label { font-size: 8.5px; }
+  .metric-chip-value { font-size: 11px; }
+
+  .card-fullpage { padding: 12px; }
+  .card-fullpage-title { font-size: 14px; margin-bottom: 8px; }
+  .field label { font-size: 11px; }
+  .field input { padding: 7px 10px; font-size: 12px; }
+  .field-hint { font-size: 10.5px; }
+  .field-row { gap: 8px; }
+  .config-divider { margin: 10px 0 6px; }
+  .config-divider-label { font-size: 10px; }
+  .toggle-row-compact { padding: 5px 8px; }
+  .toggle-label { font-size: 12px; }
+  .toggle-sub { font-size: 10.5px; }
+  .btn-save-cardfooter { padding: 9px; font-size: 12px; }
+}
+
+/* Telas MUITO baixas (~600px) — mais agressivo */
+@media (max-height: 600px) {
+  .app-header { padding: 6px 12px; }
+  .app-title { font-size: 13px; }
+  .tab-btn span:not(.material-symbols-outlined) { display: none; }
+  .tab-btn { padding: 6px 4px; }
+  .card-operacoes { padding: 8px; gap: 6px; }
+  .card-operacoes-head { /* esconde heading redundante com tab ativa */ }
+  .card-operacoes-title { display: none; }
+  .btn-xl { padding: 5px 4px; }
+  .btn-xl-icon { font-size: 16px; }
+  [data-tab-content="operacoes"] .logs-card { min-height: 70px; }
+}

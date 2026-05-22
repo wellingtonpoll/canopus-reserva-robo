@@ -5,6 +5,68 @@ Todas mudanças notáveis deste projeto serão documentadas aqui.
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/), versionamento
 [Semantic Versioning](https://semver.org/).
 
+## [1.3.0] - 2026-05-22
+
+### Added
+- **Botão "Abrir em janela" no header** — `chrome.windows.create({type:"popup", width:420, height:820})` abre popup em janela própria que cliente pode redimensionar/maximizar. Útil pra notebooks com side panel apertado. Botão some quando já em janela detached (detect via `?detached=1`). (Opção D Lote C)
+- **Screenshots em viewport compact (360×620)** no `npm run visual` pra validar layout responsivo. (Opção D Lote A)
+
+### Changed
+- **Modo Teste movido do card Operações pra Configurações** (seção "Operação"). Cliente raramente alterna — libera espaço na tela principal. (Opção D Lote B)
+- **Grupos monitorados agora dentro do card Operações** — campo compacto sem subtitle full, hint mais enxuto. Reduz altura vertical do scroll. (Opção D Lote B)
+- **CSS responsivo `@media (max-height: 720px)` e `(max-height: 600px)`** — reduz paddings, fonts e ícones em notebooks (~768px de altura). Logs passou de ~80px pra ~280px visíveis. (Opção D Lote A)
+
+### Infrastructure
+- 186 testes verde mantidos
+- `tests/visual-check.js` agora gera 6 screenshots (4 desktop + 2 compact)
+
+## [1.2.2] - 2026-05-22
+
+### Added
+- **Auto-stop missão cumprida** — quando `GRUPOS_CONFIG` esvazia (todos limites atingidos via `removerGrupoDoConfig`) e ao menos uma reserva foi feita, robô para sozinho. Telegram avisa `🎯 Todas reservas concluídas (N feitas). Robô parado automaticamente.` Cliente não precisa mais clicar stop manual. (Issue 2)
+
+### Fixed
+- **Stop responsivo em `garantirAbaPortal`** — antes, clicar stop em meio ao polling do content-script (até 45s) deixava cliente vendo coisas acontecerem após o stop. Agora `garantirAbaPortal` checa `isRunning` a cada 1s no wait do `onUpdated` e a cada iteração do loop de ping; aborta imediatamente com motivo `STOP_DURING_LOAD` ou `STOP_DURING_PING`. (Issue 1)
+
+### Infrastructure
+- 183 → 186 testes verde (+3 cobrindo stop responsivo + auto-stop com/sem reservas)
+
+## [1.2.1] - 2026-05-22
+
+### Fixed
+- **`garantirAbaPortal` agora funciona quando cliente não tem aba do portal aberta.** Telemetria do cliente mostrou que janela minimizada criada via `chrome.windows.create({state:"minimized"})` nunca recebia ping do content-script — `contentScriptVivo: false` mesmo após 20s. Causa: Angular boot lento em janela throttled + ausência de sessão (redirect pra /login). (Fix 16 Lote E)
+
+### Changed
+- `MANAGED_WINDOW_READY_TIMEOUT_MS`: 20s → 45s pra cobrir Angular boot em janela background throttled
+- `garantirAbaPortal` agora usa `chrome.tabs.onUpdated` listener pra esperar `status === "complete"` antes do primeiro ping (E3)
+- Detecta URL final via `chrome.tabs.get`. Se não é `/apps/*` (provavelmente `/login`), retorna `LOGIN_NECESSARIO` e abre janela em foco pra cliente autenticar (E4)
+- Fallback `chrome.scripting.executeScript` após 50% do timeout quando ping não vem — replica mecanismo de `tentarRecuperarContentScript` que já funciona em aba existente (E5)
+
+### Added
+- Telemetria `portal.window_created` ganha campos `url`, `status`, `injetouFallback`, `motivo`
+- Telemetria `portal.window_script_inject_fallback` quando fallback de injeção dispara
+
+### Infrastructure
+- 182 → 183 testes verde (+1 cobrindo LOGIN_NECESSARIO detection)
+
+## [1.2.0] - 2026-05-22
+
+### Added
+- **Modo background** — robô não rouba mais foco da janela do Chrome ao reservar. Cliente trabalha em outras coisas enquanto extensão executa em segundo plano. (Fix 16 Lote A)
+- **Janela minimizada automática** — se nenhuma aba do portal estiver aberta, robô cria uma janela minimizada via `chrome.windows.create({ state: "minimized", focused: false })`. Cliente não precisa mais manter o portal aberto manualmente. (Fix 16 Lote B)
+- **Badge no ícone da extensão** — quando Turnstile escala pra desafio interativo, badge 🔒 vermelho aparece no ícone (além de Telegram + popup). (Fix 16 Lote A)
+- **Listener `chrome.tabs.onRemoved`** — limpa `managedWindow` se cliente fechar a janela gerenciada. Próximo ciclo recria. (Fix 16 Lote B)
+- **Telemetria de paginação** — eventos `buscarGrupos.resultado` (count, shape da response, primeiros 5 `CD_Grupo`, presença de campos de paginação) e `filter.detectados` (count bruto vs filtrado, configKeys, cdGruposBrutos). (Fix 16 Lote C)
+- **`docs/diagnostico-paginacao.md`** — guia para cliente capturar HAR do `listGruposReserva` no portal.
+
+### Changed
+- `reservarViaTab` agora chama `garantirAbaPortal()` em vez de retornar `{ semAba: true }` quando não há aba.
+- Removidos `chrome.tabs.update({ active: true })` e `chrome.windows.update({ focused: true })` no caminho de reserva.
+
+### Infrastructure
+- 176 → 182 testes verde (6 novos cobrindo `garantirAbaPortal` + badge Turnstile)
+- `extension/tests/chrome-mock.js` ganha `chrome.windows.create`, `chrome.tabs.get`, `chrome.tabs.onRemoved`, `chrome.action.setBadgeText/setBadgeBackgroundColor`
+
 ## [1.1.1] - 2026-05-21
 
 ### Added
@@ -95,6 +157,10 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/), versionament
 - AIMD delay (multiplicação × 2 em rate limit, decay × 0.9 em ciclos limpos)
 - Jest test suite (105 testes iniciais)
 
+[1.3.0]: https://github.com/wellingtonpoll/canopus-reserva-robo/releases/tag/v1.3.0
+[1.2.2]: https://github.com/wellingtonpoll/canopus-reserva-robo/releases/tag/v1.2.2
+[1.2.1]: https://github.com/wellingtonpoll/canopus-reserva-robo/releases/tag/v1.2.1
+[1.2.0]: https://github.com/wellingtonpoll/canopus-reserva-robo/releases/tag/v1.2.0
 [1.1.1]: https://github.com/wellingtonpoll/canopus-reserva-robo/releases/tag/v1.1.1
 [1.1.0]: https://github.com/wellingtonpoll/canopus-reserva-robo/releases/tag/v1.1.0
 [1.0.1]: https://github.com/wellingtonpoll/canopus-reserva-robo/releases/tag/v1.0.1

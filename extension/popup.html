@@ -20,6 +20,9 @@
       </span>
       <span class="app-title">Canopus Robô</span>
     </div>
+    <button class="btn-detach" id="detachBtn" type="button" title="Abrir em janela própria (mais espaço)" aria-label="Abrir em janela própria">
+      <span class="material-symbols-outlined">open_in_new</span>
+    </button>
   </header>
 
   <nav class="tab-nav" role="tablist" aria-label="Seções">
@@ -64,24 +67,11 @@
           </button>
         </div>
 
-        <div class="toggle-row toggle-row-inside-card">
-          <div>
-            <div class="toggle-label">Modo Teste</div>
-            <div class="toggle-sub">Monitora sem reservar</div>
-          </div>
-          <label class="switch">
-            <input type="checkbox" id="modoTeste">
-            <span class="slider"></span>
-          </label>
-        </div>
-      </div>
-
-      <!-- Grupos monitorados (fluxo operacional) -->
-      <div class="standalone-field">
-        <div class="field">
+        <!-- Grupos monitorados (fluxo operacional) — agora dentro do card pra densidade -->
+        <div class="field field-compact">
           <label for="grupos">Grupos monitorados</label>
-          <input type="text" id="grupos" placeholder="009113:3,009114:2" aria-describedby="grupos-hint">
-          <small id="grupos-hint" class="field-hint">Robô vai monitorar apenas os grupos listados acima. Formato: <code>codigo:limite</code> separado por vírgula.</small>
+          <input type="text" id="grupos" placeholder="009113:3,009114:2" aria-describedby="grupos-hint" title="Formato: codigo:limite separado por vírgula. Ex: 009113:3,009114:2">
+          <small id="grupos-hint" class="field-hint">Formato: <code>codigo:limite</code> separado por vírgula.</small>
         </div>
       </div>
 
@@ -260,6 +250,21 @@
             <label for="telegramChatId">Chat ID</label>
             <input type="text" id="telegramChatId" placeholder="-100123456789" aria-describedby="telegramChatId-hint">
             <small id="telegramChatId-hint" class="field-hint">Use @userinfobot no Telegram pra descobrir o ID do seu chat/grupo.</small>
+          </div>
+
+          <div class="config-divider">
+            <span class="config-divider-label">Operação</span>
+          </div>
+
+          <div class="toggle-row toggle-row-compact">
+            <div>
+              <div class="toggle-label">Modo Teste</div>
+              <div class="toggle-sub">Monitora cotas sem reservar (ignora horário comercial)</div>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="modoTeste">
+              <span class="slider"></span>
+            </label>
           </div>
 
           <div class="config-divider">

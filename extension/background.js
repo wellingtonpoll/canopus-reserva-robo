@@ -28,6 +28,13 @@ const TURNSTILE_BLOQUEIO_MS = 30_000;
 // (alinhado com matches do content_scripts no manifest pra não consultar tabs onde o script não roda)
 const PORTAL_TAB_URL = "https://parceiros.consorciocanopus.com.br/apps/*";
 
+// URL inicial usada quando o robô cria a janela minimizada (Fix 16 Lote B).
+const PORTAL_BOOTSTRAP_URL = "https://parceiros.consorciocanopus.com.br/apps/reservas";
+
+// Quanto esperar pelo content-script após criar uma janela nova antes de desistir.
+// Fix 16 Lote E: 20s era curto pra Angular boot em janela minimizada throttled (~30-40s).
+const MANAGED_WINDOW_READY_TIMEOUT_MS = 45_000;
+
 // Timeout pra resposta do content-script (cobre o caso comum + Turnstile interativo)
 const TAB_RESERVA_TIMEOUT_MS = 45_000;
 
@@ -415,10 +422,29 @@ async function fazerLogin() {
 
 async function buscarGrupos(idUsuario) {
   const { USUARIO } = await chrome.storage.local.get(["USUARIO"]);
-  return apiPost(`/reservas/listGruposReserva/${idUsuario}`, {
+  const resp = await apiPost(`/reservas/listGruposReserva/${idUsuario}`, {
     IdUsuario: idUsuario,
     Usuario: String(USUARIO || "").padStart(10, "0")
   });
+  // Fix 16 Lote C: telemetria diagnóstica pra investigar se backend pagina.
+  // Pure diagnostic — não muda comportamento. Cliente exporta telemetria,
+  // suporte verifica count + shape da response pra decidir fix de paginação.
+  try {
+    const grupos = extrairGrupos(resp);
+    telemetria("buscarGrupos.resultado", {
+      count: grupos.length,
+      primeiros5CDGrupo: grupos.slice(0, 5).map(g => String(g && g.CD_Grupo || "")),
+      sampleKeys: grupos[0] ? Object.keys(grupos[0]) : [],
+      respKeys: resp ? Object.keys(resp) : [],
+      temField_totalPages: resp && typeof resp.totalPages !== "undefined",
+      temField_hasNext: resp && typeof resp.hasNext !== "undefined",
+      temField_pageSize: resp && typeof resp.pageSize !== "undefined",
+      respDataShape: Array.isArray(resp && resp.data)
+        ? (Array.isArray(resp.data[0]) ? "nested-array" : "flat-array")
+        : "non-array"
+    });
+  } catch (_) {}
+  return resp;
 }
 
 async function reservar(grupo, idUsuario, idEmpresa) {
@@ -493,41 +519,222 @@ async function tentarRecuperarContentScript(tab) {
   return false;
 }
 
-// Reserva via content-script (Fix 3-H). Routes through page DOM context para passar pelo Turnstile.
-// Retorna sempre objeto rotulado com chaves específicas (semAba, turnstileTimeout, fase2Pendente, erro, result).
-async function reservarViaTab(grupo, grupoId) {
+// Fix 16 Lote B: garante que existe uma aba do portal aberta. Se nenhuma existir,
+// cria uma janela minimizada e espera o content-script subir. Retorna a aba que
+// reservarViaTab vai usar — ou erro estruturado se não foi possível disponibilizar.
+async function garantirAbaPortal() {
   let tabs;
   try {
     tabs = await chrome.tabs.query({ url: PORTAL_TAB_URL });
   } catch (err) {
-    notificarPopup(`❌ Erro ao consultar abas do portal: ${(err && err.message) || err}`);
-    return { erro: "TABS_QUERY_FAILED" };
+    telemetria("portal.query_err", { erro: (err && err.message) || String(err) });
+    return { ok: false, motivo: "TABS_QUERY_FAILED" };
   }
 
-  if (!tabs || tabs.length === 0) {
-    const msg = `⚠️ Cota ${grupoId} encontrada mas robô não consegue reservar — abra parceiros.consorciocanopus.com.br numa aba.`;
+  if (tabs && tabs.length > 0) {
+    return { ok: true, tabId: tabs[0].id, windowId: tabs[0].windowId, created: false, tab: tabs[0] };
+  }
+
+  // Sem aba aberta — cria janela minimizada dedicada.
+  if (!chrome.windows || typeof chrome.windows.create !== "function") {
+    return { ok: false, motivo: "WINDOWS_API_INDISPONIVEL" };
+  }
+
+  let novaJanela;
+  try {
+    novaJanela = await chrome.windows.create({
+      url: PORTAL_BOOTSTRAP_URL,
+      state: "minimized",
+      focused: false,
+      type: "normal"
+    });
+  } catch (err) {
+    telemetria("portal.window_create_err", { erro: (err && err.message) || String(err) });
+    return { ok: false, motivo: "WINDOW_CREATE_FAILED" };
+  }
+
+  const novaTab = novaJanela && Array.isArray(novaJanela.tabs) && novaJanela.tabs[0];
+  if (!novaTab || novaTab.id == null) {
+    return { ok: false, motivo: "WINDOW_SEM_TAB" };
+  }
+
+  // Helper: cliente clicou stop? Aborta cedo pra não travar cliente vendo coisas
+  // depois do stop. Strict check: só considera parado se isRunning explicitamente
+  // false. Undefined (SW restart) não conta — runPollingLoop já trata isso antes.
+  async function clienteParouMonitoramento() {
+    try {
+      const s = await chrome.storage.session.get(["isRunning"]);
+      return s.isRunning === false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // Fix 16 Lote E (E3): em vez de polling cego, espera tab status === "complete"
+  // primeiro (até timeout/2). Janela minimizada é throttled, mas onUpdated dispara
+  // assim que load termina — evita pingar enquanto Angular ainda bootstrapando.
+  const inicio = Date.now();
+  const timeoutComplete = Math.floor(MANAGED_WINDOW_READY_TIMEOUT_MS / 2);
+  let urlFinal = novaTab.url || PORTAL_BOOTSTRAP_URL;
+  let statusFinal = novaTab.status || "loading";
+  let stopAbort = false;
+  try {
+    await new Promise((resolve) => {
+      const t = setTimeout(() => {
+        clearInterval(stopCheck);
+        try { chrome.tabs.onUpdated.removeListener(listener); } catch (_) {}
+        resolve();
+      }, timeoutComplete);
+      const listener = (id, changeInfo, tab) => {
+        if (id !== novaTab.id) return;
+        if (tab && tab.url) urlFinal = tab.url;
+        if (tab && tab.status) statusFinal = tab.status;
+        if (changeInfo.status === "complete" || tab.status === "complete") {
+          clearTimeout(t);
+          clearInterval(stopCheck);
+          try { chrome.tabs.onUpdated.removeListener(listener); } catch (_) {}
+          resolve();
+        }
+      };
+      chrome.tabs.onUpdated.addListener(listener);
+      // Issue 1: poll isRunning a cada 1s — aborta cedo se cliente parou
+      const stopCheck = setInterval(async () => {
+        if (await clienteParouMonitoramento()) {
+          stopAbort = true;
+          clearInterval(stopCheck);
+          clearTimeout(t);
+          try { chrome.tabs.onUpdated.removeListener(listener); } catch (_) {}
+          resolve();
+        }
+      }, 1000);
+    });
+  } catch (_) {}
+
+  if (stopAbort) {
+    telemetria("portal.window_created", { tabId: novaTab.id, windowId: novaJanela.id, contentScriptVivo: false, motivo: "STOP_DURING_LOAD" });
+    return { ok: false, motivo: "STOP_DURING_LOAD", tabId: novaTab.id, windowId: novaJanela.id };
+  }
+
+  // Após "complete" (ou timeout), checa URL final via chrome.tabs.get
+  try {
+    if (chrome.tabs && typeof chrome.tabs.get === "function") {
+      const t = await chrome.tabs.get(novaTab.id);
+      if (t && t.url) urlFinal = t.url;
+      if (t && t.status) statusFinal = t.status;
+    }
+  } catch (_) {}
+
+  // Fix 16 Lote E (E4): se URL final não é /apps/*, provavelmente é tela de login.
+  // Content-script só matches /apps/*. Avisa cliente abrindo janela em foco.
+  const isAppsRoute = /^https:\/\/parceiros\.consorciocanopus\.com\.br\/apps\//.test(urlFinal);
+  if (!isAppsRoute) {
+    try {
+      await chrome.windows.update(novaJanela.id, { state: "normal", focused: true });
+    } catch (_) {}
+    telemetria("portal.window_created", {
+      tabId: novaTab.id,
+      windowId: novaJanela.id,
+      contentScriptVivo: false,
+      url: urlFinal,
+      status: statusFinal,
+      motivo: "URL_FORA_DE_APPS"
+    });
+    const msg = `🔐 Robô abriu o portal mas você precisa fazer login (URL atual: ${urlFinal.split("?")[0]}). Faça login e mantenha a aba aberta — o robô usa a sessão dela.`;
     notificarPopup(msg);
-    telemetria("reserva.tab.req", { grupoId, semAba: true });
-    await telegramNotify(msg);
-    return { semAba: true };
+    telegramNotify(msg).catch(() => {});
+    return { ok: false, motivo: "LOGIN_NECESSARIO", tabId: novaTab.id, windowId: novaJanela.id, url: urlFinal };
   }
 
-  const tabId = tabs[0].id;
-  const windowId = tabs[0].windowId;
+  // Poll ping até content-script responder. Fix 16 Lote E (E5): se ping não vier
+  // até 1/4 do timeout restante, tenta injetar via scripting.executeScript como
+  // fallback (mesmo mecanismo de tentarRecuperarContentScript que funciona quando
+  // aba já existe).
+  const restanteMs = () => MANAGED_WINDOW_READY_TIMEOUT_MS - (Date.now() - inicio);
+  let vivo = false;
+  let injetouFallback = false;
+  while (restanteMs() > 0) {
+    // Issue 1: aborta cedo se cliente parou enquanto pollávamos content-script
+    if (await clienteParouMonitoramento()) {
+      telemetria("portal.window_created", { tabId: novaTab.id, windowId: novaJanela.id, contentScriptVivo: false, motivo: "STOP_DURING_PING" });
+      return { ok: false, motivo: "STOP_DURING_PING", tabId: novaTab.id, windowId: novaJanela.id };
+    }
+    try {
+      const resp = await chrome.tabs.sendMessage(novaTab.id, { action: "ping" });
+      if (resp) { vivo = true; break; }
+    } catch (_) { /* ainda carregando */ }
+
+    // Fallback: se já passou 1/4 do restante e ainda não respondeu, injeta script
+    if (!injetouFallback && (Date.now() - inicio) > MANAGED_WINDOW_READY_TIMEOUT_MS / 2) {
+      injetouFallback = true;
+      try {
+        if (chrome.scripting && chrome.scripting.executeScript) {
+          await chrome.scripting.executeScript({
+            target: { tabId: novaTab.id },
+            files: ["content.js"]
+          });
+          telemetria("portal.window_script_inject_fallback", { tabId: novaTab.id });
+        }
+      } catch (_) {}
+    }
+
+    await sleep(500);
+  }
+
+  telemetria("portal.window_created", {
+    tabId: novaTab.id,
+    windowId: novaJanela.id,
+    contentScriptVivo: vivo,
+    esperaMs: Date.now() - inicio,
+    url: urlFinal,
+    status: statusFinal,
+    injetouFallback
+  });
+
+  if (!vivo) {
+    return { ok: false, motivo: "CONTENT_SCRIPT_NAO_RESPONDEU", tabId: novaTab.id, windowId: novaJanela.id, url: urlFinal };
+  }
+
+  await chrome.storage.session.set({
+    managedWindow: { tabId: novaTab.id, windowId: novaJanela.id, criadoEm: Date.now() }
+  });
+
+  const msg = `🤖 Janela do portal iniciada em segundo plano (minimizada). Sem necessidade de intervenção, exceto se o Turnstile escalar pra interativo.`;
+  notificarPopup(msg);
+  telegramNotify(msg).catch(() => {});
+
+  return { ok: true, tabId: novaTab.id, windowId: novaJanela.id, created: true, tab: novaTab };
+}
+
+// Reserva via content-script (Fix 3-H). Routes through page DOM context para passar pelo Turnstile.
+// Retorna sempre objeto rotulado com chaves específicas (semAba, turnstileTimeout, fase2Pendente, erro, result).
+async function reservarViaTab(grupo, grupoId) {
+  // Fix 16 Lote B: garante aba antes de tentar reservar. Cria janela minimizada
+  // se necessário — cliente não precisa mais manter portal aberto manualmente.
+  const portal = await garantirAbaPortal();
+  if (!portal.ok) {
+    let msg;
+    if (portal.motivo === "LOGIN_NECESSARIO") {
+      // garantirAbaPortal já avisou cliente. Não duplicar — mas registra reserva perdida.
+      msg = `⚠️ Cota ${grupoId} perdida — faça login no portal pra próxima.`;
+    } else {
+      msg = `⚠️ Cota ${grupoId} encontrada mas robô não conseguiu abrir o portal (${portal.motivo}). Abra parceiros.consorciocanopus.com.br manualmente.`;
+    }
+    notificarPopup(msg);
+    telemetria("reserva.tab.req", { grupoId, semAba: true, motivo: portal.motivo });
+    if (portal.motivo !== "LOGIN_NECESSARIO") {
+      await telegramNotify(msg);
+    }
+    return { semAba: true, motivo: portal.motivo };
+  }
+
+  const tabId = portal.tabId;
+  const windowId = portal.windowId;
   const reqStart = Date.now();
   telemetria("reserva.tab.req", { grupoId, NM_Produto: grupo.NM_Produto, tabId, windowId });
 
-  // Fix 5: foca aba+janela ANTES de mandar reservar via content-script. Cliente
-  // é puxado pro portal pra acompanhar o robô agindo e resolver Turnstile se
-  // o widget pedir "Sou humano".
-  try {
-    await chrome.tabs.update(tabId, { active: true });
-    if (windowId != null && chrome.windows && typeof chrome.windows.update === "function") {
-      await chrome.windows.update(windowId, { focused: true });
-    }
-  } catch (err) {
-    telemetria("reserva.tab.focus_err", { erro: (err && err.message) || String(err) });
-  }
+  // Fix 16 Lote A: não rouba mais foco da aba/janela. Content-script roda mesmo
+  // com aba em background. Quando Turnstile escala pra interativo, cliente é
+  // avisado via badge no ícone + Telegram + popup.
 
   async function trySendMessage() {
     return Promise.race([
@@ -546,7 +753,7 @@ async function reservarViaTab(grupo, grupoId) {
     if (errMsg.includes("Receiving end does not exist") || errMsg.includes("Could not establish connection")) {
       // Fix 11: tenta recuperar automaticamente — injetar via scripting OU navegar pra /apps/reservas
       notificarPopup(`⚙️ Content-script ausente — tentando recuperar automaticamente...`);
-      const recuperou = await tentarRecuperarContentScript(tabs[0]);
+      const recuperou = await tentarRecuperarContentScript(portal.tab || { id: tabId });
       if (recuperou) {
         try {
           tabResp = await trySendMessage();
@@ -940,6 +1147,19 @@ async function runMonitorCycle() {
       telemetria("dedup.applied", { duplicados, contagem: dedupContagem });
     }
 
+    // Fix 16 Lote C: telemetria do filtro pra distinguir bug de paginação vs bug de filtro.
+    // Se brutosCount alto mas detectadosCount=0, problema é filtro/config. Se brutosCount
+    // truncado (ex: sempre 100), backend pagina e robô só vê página 1.
+    telemetria("filter.detectados", {
+      brutosCount: grupos.length,
+      alvoConfigCount: Object.keys(gruposAlvo).length,
+      detectadosCount: detectados.length,
+      configKeys: Object.keys(gruposAlvo),
+      cdGruposBrutos: grupos.slice(0, 20).map(g => String(g && g.CD_Grupo || "")),
+      produtosBloqueadosCount: produtosBloqueados.length,
+      cooldownAtivos: Object.keys(cooldown)
+    });
+
     if (detectados.length === 0) {
       notificarPopup(`💥 Nenhuma cota disponível no momento...`);
       const sessIdle = await chrome.storage.session.get(["ciclosVazios"]);
@@ -1025,6 +1245,23 @@ async function runMonitorCycle() {
       await chrome.storage.local.set({ metricasDia, metricasHoras });
     } catch (_) {}
 
+    // Issue 2: missão cumprida — se GRUPOS_CONFIG esvaziou + houve pelo menos
+    // uma reserva no histórico, para sozinho. Cliente não precisa clicar stop manual.
+    try {
+      const local = await chrome.storage.local.get(["GRUPOS_CONFIG", "reservasPorGrupo"]);
+      const configVazia = !local.GRUPOS_CONFIG || !local.GRUPOS_CONFIG.trim();
+      const totalReservas = local.reservasPorGrupo
+        ? Object.values(local.reservasPorGrupo).reduce((acc, n) => acc + (n || 0), 0)
+        : 0;
+      if (configVazia && totalReservas > 0) {
+        const msg = `🎯 Todas reservas concluídas (${totalReservas} ${totalReservas === 1 ? "feita" : "feitas"}). Robô parado automaticamente.`;
+        notificarPopup(msg);
+        telegramNotify(msg).catch(() => {});
+        telemetria("missao.cumprida", { totalReservas });
+        await pararMonitoramento();
+      }
+    } catch (_) {}
+
     await flushTelemetria();
   }
 
@@ -1076,6 +1313,7 @@ async function runPollingLoop() {
   }
   if (sess.turnstileBloqueado) {
     await chrome.storage.session.set({ turnstileBloqueado: false, turnstileBloqueadoAte: null });
+    await limparBadgeTurnstile();
     notificarPopup(`✅ Pausa por Turnstile encerrada. Retomando.`);
   }
 
@@ -1241,6 +1479,21 @@ async function pararMonitoramento() {
 
 // Alarm como fallback: reativa loop se SW foi encerrado pelo browser.
 // Respeita nextRunAt — não fura schedule do RATE_LIMIT/circuit/etc.
+// Fix 16 Lote B: limpa managedWindow se o cliente fechar a aba gerenciada.
+// Próximo reservarViaTab recria via garantirAbaPortal.
+if (chrome.tabs && chrome.tabs.onRemoved && typeof chrome.tabs.onRemoved.addListener === "function") {
+  chrome.tabs.onRemoved.addListener(async (tabId) => {
+    try {
+      const sess = await chrome.storage.session.get(["managedWindow"]);
+      const mw = sess.managedWindow;
+      if (mw && mw.tabId === tabId) {
+        await chrome.storage.session.set({ managedWindow: null });
+        telemetria("portal.managed_window_closed", { tabId });
+      }
+    } catch (_) {}
+  });
+}
+
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== alarmName) return;
   const { isRunning, nextRunAt } = await chrome.storage.session.get(["isRunning", "nextRunAt"]);
@@ -1255,7 +1508,24 @@ async function handleTurnstileChallenge() {
   const msg = `🚨 Turnstile pediu interação manual — resolva no portal em ${TURNSTILE_BLOQUEIO_MS/1000}s. Robô pausado.`;
   notificarPopup(msg);
   telemetria("turnstile.detected_interactive", { bloqueioMs: TURNSTILE_BLOQUEIO_MS });
+  // Fix 16 Lote A: sinaliza no ícone da extensão (visível independente do popup).
+  try {
+    if (chrome.action && chrome.action.setBadgeText) {
+      await chrome.action.setBadgeText({ text: "🔒" });
+      if (chrome.action.setBadgeBackgroundColor) {
+        await chrome.action.setBadgeBackgroundColor({ color: "#d32f2f" });
+      }
+    }
+  } catch (_) {}
   await telegramNotify(msg);
+}
+
+async function limparBadgeTurnstile() {
+  try {
+    if (chrome.action && chrome.action.setBadgeText) {
+      await chrome.action.setBadgeText({ text: "" });
+    }
+  } catch (_) {}
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -1342,6 +1612,7 @@ if (typeof module !== "undefined") {
     fazerLogin,
     reservarComLimite,
     reservarViaTab,
+    garantirAbaPortal,
     runMonitorCycle,
     runPollingLoop,
     handleTurnstileChallenge,

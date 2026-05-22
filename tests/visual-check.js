@@ -201,6 +201,18 @@ async function main() {
   }, { timeout: 3000 }).catch(() => {});
   await page.screenshot({ path: path.join(OUT_DIR, '04-config.png'), fullPage: true });
 
+  // Opção D Lote A: screenshots adicionais em viewport pequeno (notebook ~768px)
+  // pra validar @media (max-height: 720px) compact mode
+  console.log('→ Compact: Operações (notebook 360×620)');
+  await page.setViewportSize({ width: 360, height: 620 });
+  await page.evaluate(() => document.body.setAttribute('data-tab', 'operacoes'));
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(OUT_DIR, '05-operacoes-compact.png'), fullPage: false });
+  console.log('→ Compact: Configurações (notebook 360×620)');
+  await page.evaluate(() => document.body.setAttribute('data-tab', 'config'));
+  await page.waitForTimeout(300);
+  await page.screenshot({ path: path.join(OUT_DIR, '06-config-compact.png'), fullPage: false });
+
   await browser.close();
 
   // Atualiza symlink/copia latest

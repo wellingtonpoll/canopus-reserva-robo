@@ -12,7 +12,10 @@ const {
   proximaAberturaBR,
   fazerLogin,
   reservarComLimite,
+  reservarViaTab,
+  garantirAbaPortal,
   runMonitorCycle,
+  handleTurnstileChallenge,
   telegramNotify,
   sleep
 } = require('../background.js');
@@ -323,46 +326,55 @@ describe("reservarComLimite (via content-script)", () => {
     );
   });
 
-  test("Fix 5: foca aba antes de mandar reservar_via_dom", async () => {
+  test("Fix 16: NÃO rouba foco da aba/janela ao reservar", async () => {
     chrome.tabs.query.mockResolvedValue([{ id: 42, windowId: 7 }]);
     chrome.tabs.sendMessage.mockResolvedValue({ ok: true, reserva: {} });
     await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
-    expect(chrome.tabs.update).toHaveBeenCalledWith(42, { active: true });
-    expect(chrome.windows.update).toHaveBeenCalledWith(7, { focused: true });
-    // Foco DEVE acontecer antes do sendMessage
-    const focusOrder = chrome.tabs.update.mock.invocationCallOrder[0];
-    const sendOrder = chrome.tabs.sendMessage.mock.invocationCallOrder[0];
-    expect(focusOrder).toBeLessThan(sendOrder);
+    const updateFocusCalls = chrome.tabs.update.mock.calls.filter(c => c[1] && c[1].active === true);
+    expect(updateFocusCalls).toHaveLength(0);
+    expect(chrome.windows.update).not.toHaveBeenCalled();
   });
 
-  test("Fix 5: erro ao focar aba não bloqueia reserva", async () => {
-    chrome.tabs.query.mockResolvedValue([{ id: 42, windowId: 7 }]);
-    chrome.tabs.update.mockRejectedValueOnce(new Error("Tab not found"));
-    chrome.tabs.sendMessage.mockResolvedValue({ ok: true, reserva: {} });
-    const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
-    expect(chrome.tabs.sendMessage).toHaveBeenCalled();
-    expect(out).toMatchObject({ reservou: true });
-  });
-
-  test("sem aba do portal — não corrompe contador, retorna semAba", async () => {
+  test("Fix 16 Lote B: sem aba + windows.create falha → retorna semAba", async () => {
     chrome.tabs.query.mockResolvedValue([]);
+    chrome.windows.create.mockRejectedValueOnce(new Error("user closed"));
     const reservasPorGrupo = { "009113": 1 };
     const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, reservasPorGrupo, false);
     expect(out).toMatchObject({ reservou: false, semAba: true });
-    expect(chrome.tabs.sendMessage).not.toHaveBeenCalled();
+    expect(chrome.tabs.sendMessage).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "reservar_via_dom" })
+    );
     const counterSet = chrome.storage.local.set.mock.calls.find(c => c[0].reservasPorGrupo);
     expect(counterSet).toBeUndefined();
   });
 
-  test("sem aba do portal — loga aviso pro cliente abrir o portal", async () => {
+  test("Fix 16 Lote B: sem aba + windows.create falha → loga aviso", async () => {
     chrome.tabs.query.mockResolvedValue([]);
+    chrome.windows.create.mockRejectedValueOnce(new Error("user closed"));
     await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
     expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "log",
-        text: expect.stringMatching(/abra parceiros\.consorciocanopus\.com\.br/)
+        text: expect.stringMatching(/Abra parceiros\.consorciocanopus\.com\.br/i)
       })
     );
+  });
+
+  test("Fix 16 Lote B: sem aba → cria janela minimizada e usa pra reservar", async () => {
+    chrome.tabs.query.mockResolvedValue([]);
+    chrome.windows.create.mockResolvedValueOnce({ id: 555, tabs: [{ id: 666 }] });
+    // ping responde no primeiro poll
+    chrome.tabs.sendMessage.mockResolvedValueOnce({ pong: true });
+    // depois reserva via dom retorna sucesso
+    chrome.tabs.sendMessage.mockResolvedValueOnce({ ok: true, reserva: {} });
+    const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
+    expect(chrome.windows.create).toHaveBeenCalledWith(
+      expect.objectContaining({ state: "minimized", focused: false })
+    );
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(666, expect.objectContaining({ action: "ping" }));
+    expect(chrome.tabs.sendMessage).toHaveBeenCalledWith(666, expect.objectContaining({ action: "reservar_via_dom" }));
+    expect(out).toMatchObject({ reservou: true });
   });
 
   test("incrementa contador após sucesso via tab", async () => {
@@ -1701,5 +1713,188 @@ describe("Fix 9 — mutex runPollingLoop", () => {
       c => c[0].cycleRunning === false
     );
     expect(lockReleased).toBeDefined();
+  });
+});
+
+// ─── Fix 16: garantirAbaPortal + badge Turnstile + telemetria paginação ──────
+describe("Fix 16 Lote B: garantirAbaPortal", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSleep();
+    chrome.storage.local.get.mockResolvedValue({ TELEMETRIA_LIGADA: false });
+    chrome.storage.session.get.mockResolvedValue({});
+  });
+
+  test("com aba existente → reusa, não chama windows.create", async () => {
+    chrome.tabs.query.mockResolvedValue([{ id: 42, windowId: 7 }]);
+    const out = await garantirAbaPortal();
+    expect(out).toMatchObject({ ok: true, tabId: 42, windowId: 7, created: false });
+    expect(chrome.windows.create).not.toHaveBeenCalled();
+  });
+
+  test("sem aba + create sucesso + ping vivo → cria janela minimizada", async () => {
+    chrome.tabs.query.mockResolvedValue([]);
+    chrome.windows.create.mockResolvedValueOnce({ id: 555, tabs: [{ id: 666 }] });
+    chrome.tabs.sendMessage.mockResolvedValueOnce({ pong: true });
+    const out = await garantirAbaPortal();
+    expect(chrome.windows.create).toHaveBeenCalledWith(
+      expect.objectContaining({ state: "minimized", focused: false, type: "normal" })
+    );
+    expect(out).toMatchObject({ ok: true, tabId: 666, windowId: 555, created: true });
+    const persistCall = chrome.storage.session.set.mock.calls.find(c => c[0].managedWindow);
+    expect(persistCall).toBeDefined();
+    expect(persistCall[0].managedWindow).toMatchObject({ tabId: 666, windowId: 555 });
+  });
+
+  test("sem aba + create falha → retorna ok:false WINDOW_CREATE_FAILED", async () => {
+    chrome.tabs.query.mockResolvedValue([]);
+    chrome.windows.create.mockRejectedValueOnce(new Error("user cancelled"));
+    const out = await garantirAbaPortal();
+    expect(out).toMatchObject({ ok: false, motivo: "WINDOW_CREATE_FAILED" });
+  });
+
+  test("Fix 16 Lote E: sem aba + URL final = /login → LOGIN_NECESSARIO + abre janela em foco", async () => {
+    chrome.tabs.query.mockResolvedValue([]);
+    chrome.windows.create.mockResolvedValueOnce({ id: 555, tabs: [{ id: 666, url: "https://parceiros.consorciocanopus.com.br/login" }] });
+    // tabs.get retorna /login (não /apps/*)
+    chrome.tabs.get.mockResolvedValueOnce({ id: 666, url: "https://parceiros.consorciocanopus.com.br/login", status: "complete" });
+    const out = await garantirAbaPortal();
+    expect(out).toMatchObject({ ok: false, motivo: "LOGIN_NECESSARIO" });
+    // Janela puxada pra foco pra cliente autenticar
+    expect(chrome.windows.update).toHaveBeenCalledWith(555, expect.objectContaining({ state: "normal", focused: true }));
+  });
+
+  test("sem aba + create sucesso + ping nunca responde → CONTENT_SCRIPT_NAO_RESPONDEU", async () => {
+    chrome.tabs.query.mockResolvedValue([]);
+    chrome.windows.create.mockResolvedValueOnce({ id: 555, tabs: [{ id: 666 }] });
+    chrome.tabs.sendMessage.mockRejectedValue(new Error("Receiving end does not exist"));
+    // Avança Date.now em saltos pra não esperar 20s reais
+    let virtual = 0;
+    const realNow = Date.now;
+    jest.spyOn(Date, 'now').mockImplementation(() => {
+      const t = realNow.call(Date) + virtual;
+      virtual += 1000;
+      return t;
+    });
+    const out = await garantirAbaPortal();
+    expect(out).toMatchObject({ ok: false, motivo: "CONTENT_SCRIPT_NAO_RESPONDEU" });
+    Date.now.mockRestore();
+  });
+});
+
+describe("Issue 1: stop responsivo em garantirAbaPortal", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSleep();
+    chrome.storage.local.get.mockResolvedValue({ TELEMETRIA_LIGADA: false });
+  });
+
+  test("aborta loop de ping cedo se isRunning vira false", async () => {
+    chrome.tabs.query.mockResolvedValue([]);
+    chrome.windows.create.mockResolvedValueOnce({ id: 555, tabs: [{ id: 666 }] });
+    chrome.tabs.sendMessage.mockRejectedValue(new Error("Receiving end does not exist"));
+    // Primeira chamada storage.session.get retorna isRunning=true; depois vira false
+    let calls = 0;
+    chrome.storage.session.get.mockImplementation(async () => {
+      calls++;
+      return { isRunning: calls > 2 ? false : true };
+    });
+    const out = await garantirAbaPortal();
+    expect(out).toMatchObject({ ok: false, motivo: "STOP_DURING_PING" });
+  });
+});
+
+describe("Issue 2: auto-stop quando todos limites atingidos", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSleep();
+  });
+
+  test("após cycle.end, GRUPOS_CONFIG vazio + reservas > 0 → para automaticamente", async () => {
+    chrome.storage.local.get.mockImplementation((keys) => {
+      if (Array.isArray(keys) && keys.includes("GRUPOS_CONFIG")) {
+        return Promise.resolve({
+          idUsuario: 99, idEmpresa: 1, USUARIO: "12345",
+          GRUPOS_CONFIG: "", MODO_TESTE: false,
+          reservasPorGrupo: { "009113": 1 },
+          TELEGRAM_TOKEN: "", TELEGRAM_CHAT_ID: ""
+        });
+      }
+      if (Array.isArray(keys) && keys.includes("reservasPorGrupo")) {
+        return Promise.resolve({ reservasPorGrupo: { "009113": 1 } });
+      }
+      if (Array.isArray(keys) && keys.includes("metricasDia")) {
+        return Promise.resolve({ metricasDia: {}, metricasHoras: {} });
+      }
+      return Promise.resolve({});
+    });
+    chrome.storage.session.get.mockResolvedValue({ isRunning: true });
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({ success: true, data: [[]] })
+    });
+
+    await runMonitorCycle();
+
+    // pararMonitoramento setou isRunning=false
+    const stopCall = chrome.storage.session.set.mock.calls.find(
+      c => c[0] && c[0].isRunning === false
+    );
+    expect(stopCall).toBeDefined();
+  });
+
+  test("config vazia mas reservas=0 → NÃO para", async () => {
+    chrome.storage.local.get.mockImplementation((keys) => {
+      if (Array.isArray(keys) && keys.includes("GRUPOS_CONFIG")) {
+        return Promise.resolve({
+          idUsuario: 99, idEmpresa: 1, USUARIO: "12345",
+          GRUPOS_CONFIG: "", MODO_TESTE: false,
+          reservasPorGrupo: {}, TELEGRAM_TOKEN: "", TELEGRAM_CHAT_ID: ""
+        });
+      }
+      if (Array.isArray(keys) && keys.includes("reservasPorGrupo")) {
+        return Promise.resolve({ reservasPorGrupo: {} });
+      }
+      if (Array.isArray(keys) && keys.includes("metricasDia")) {
+        return Promise.resolve({ metricasDia: {}, metricasHoras: {} });
+      }
+      return Promise.resolve({});
+    });
+    chrome.storage.session.get.mockResolvedValue({ isRunning: true });
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({ success: true, data: [[]] })
+    });
+
+    await runMonitorCycle();
+
+    const stopCall = chrome.storage.session.set.mock.calls.find(
+      c => c[0] && c[0].isRunning === false
+    );
+    expect(stopCall).toBeUndefined();
+  });
+});
+
+describe("Fix 16 Lote A: handleTurnstileChallenge sinaliza badge", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    chrome.storage.session.set.mockResolvedValue(undefined);
+    chrome.storage.local.get.mockResolvedValue({ TELEMETRIA_LIGADA: false });
+  });
+
+  test("seta badge 🔒 + cor de fundo", async () => {
+    await handleTurnstileChallenge();
+    expect(chrome.action.setBadgeText).toHaveBeenCalledWith({ text: "🔒" });
+    expect(chrome.action.setBadgeBackgroundColor).toHaveBeenCalledWith(
+      expect.objectContaining({ color: expect.stringMatching(/^#/) })
+    );
+  });
+
+  test("seta turnstileBloqueado=true em storage.session", async () => {
+    await handleTurnstileChallenge();
+    const setCalls = chrome.storage.session.set.mock.calls;
+    const blockedCall = setCalls.find(c => c[0].turnstileBloqueado === true);
+    expect(blockedCall).toBeDefined();
+    expect(blockedCall[0].turnstileBloqueadoAte).toBeGreaterThan(Date.now());
   });
 });

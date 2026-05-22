@@ -24,6 +24,7 @@ const metricRate       = document.getElementById('metricRate');
 const metricErroWrap   = document.getElementById('metricErroWrap');
 const tabButtons       = document.querySelectorAll('.tab-btn');
 const exportCsvBtn     = document.getElementById('exportCsvBtn');
+const detachBtn        = document.getElementById('detachBtn');
 const confirmDialog    = document.getElementById('confirmDialog');
 const confirmDialogTitle = document.getElementById('confirmDialogTitle');
 const confirmDialogBody = document.getElementById('confirmDialogBody');
@@ -455,6 +456,13 @@ function sendAction(action, onSuccess, onError) {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // Opção D Lote C: detecta se popup roda em janela própria (?detached=1).
+  // Esconde botão de detach pra não duplicar abertura.
+  try {
+    const params = new URLSearchParams(location.search);
+    if (params.get('detached') === '1') document.body.dataset.detached = 'true';
+  } catch (_) {}
+
   // Restaura tab ativa
   try {
     const { activeTab } = await chrome.storage.session.get(['activeTab']);
@@ -577,6 +585,20 @@ clearBtn.addEventListener('click', async () => {
   if (!ok) return;
   logsEl.innerHTML = '';
 });
+
+// Opção D Lote C: abre popup em janela própria pra cliente ter mais espaço
+if (detachBtn) {
+  detachBtn.addEventListener('click', async () => {
+    try {
+      const url = chrome.runtime.getURL('popup.html') + '?detached=1';
+      await chrome.windows.create({ url, type: 'popup', width: 420, height: 820, focused: true });
+      // Fecha o side panel atual pra não duplicar UI
+      try { window.close(); } catch (_) {}
+    } catch (err) {
+      addLog(`❌ Erro ao abrir janela: ${err && err.message || err}`);
+    }
+  });
+}
 
 copyBtn.addEventListener('click', async () => {
   const lines = Array.from(logsEl.querySelectorAll('.log-line')).map(line => line.textContent.trim());
