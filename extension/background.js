@@ -2,7 +2,7 @@
 // SW context (Chrome MV3): importScripts é síncrono e popula self.X
 // Node test context (Jest): chrome-mock.js shim do importScripts faz require + Object.assign(global)
 if (typeof importScripts !== "undefined") {
-  importScripts('lib/state.js', 'lib/format.js', 'lib/notifications.js', 'lib/horario.js', 'lib/telemetria.js', 'lib/telegram.js', 'lib/rate-limit.js', 'lib/schedule.js', 'lib/api.js', 'lib/auth.js', 'lib/grupos.js');
+  importScripts('lib/state.js', 'lib/format.js', 'lib/notifications.js', 'lib/horario.js', 'lib/telemetria.js', 'lib/telegram.js', 'lib/rate-limit.js', 'lib/schedule.js', 'lib/api.js', 'lib/auth.js', 'lib/grupos.js', 'lib/turnstile.js');
 }
 if (typeof require !== "undefined" && typeof module !== "undefined") {
   Object.assign(global, require('./lib/state'));
@@ -16,6 +16,7 @@ if (typeof require !== "undefined" && typeof module !== "undefined") {
   Object.assign(global, require('./lib/api'));
   Object.assign(global, require('./lib/auth'));
   Object.assign(global, require('./lib/grupos'));
+  Object.assign(global, require('./lib/turnstile'));
 }
 
 // Telemetria movida pra lib/telemetria.js (Spec 01) — getTelemetriaLigada,
@@ -943,31 +944,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   runPollingLoop();
 });
 
-async function handleTurnstileChallenge() {
-  const ate = Date.now() + TURNSTILE_BLOQUEIO_MS;
-  await chrome.storage.session.set({ turnstileBloqueado: true, turnstileBloqueadoAte: ate });
-  const msg = `🚨 Turnstile pediu interação manual — resolva no portal em ${TURNSTILE_BLOQUEIO_MS/1000}s. Robô pausado.`;
-  notificarPopup(msg);
-  telemetria("turnstile.detected_interactive", { bloqueioMs: TURNSTILE_BLOQUEIO_MS });
-  // Fix 16 Lote A: sinaliza no ícone da extensão (visível independente do popup).
-  try {
-    if (chrome.action && chrome.action.setBadgeText) {
-      await chrome.action.setBadgeText({ text: "🔒" });
-      if (chrome.action.setBadgeBackgroundColor) {
-        await chrome.action.setBadgeBackgroundColor({ color: "#d32f2f" });
-      }
-    }
-  } catch (_) {}
-  await telegramNotify(msg);
-}
-
-async function limparBadgeTurnstile() {
-  try {
-    if (chrome.action && chrome.action.setBadgeText) {
-      await chrome.action.setBadgeText({ text: "" });
-    }
-  } catch (_) {}
-}
+// handleTurnstileChallenge + limparBadgeTurnstile movidos pra lib/turnstile.js (Spec 01)
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || !message.action) return false;
