@@ -11,7 +11,7 @@ Score atual e análise completa: ver discussão no histórico do projeto (`SCORE
 | 02 | [Publicar Chrome Web Store](./02-chrome-web-store.md) | P1 | L | +8 | backlog | — |
 | 03 | [Auto-login via cookie hijack](./03-auto-login-cookie-hijack.md) | P1 | M | +5 | backlog | — |
 | 07 | [Credenciais via OS keyring](./07-credenciais-os-keyring.md) | P1 | L | +5 | backlog | 06 |
-| 01 | [Modularizar background.js](./01-modularizar-background.md) | P2 | M | +8 | backlog | — |
+| 01 | [Modularizar background.js](./01-modularizar-background.md) | P2 | M | +8 | ✅ done | — |
 | 06 | [Installer cross-platform (macOS/Linux)](./06-installer-cross-platform.md) | P2 | L | +3 | backlog | — |
 | 08 | [E2E test stub com portal fake](./08-e2e-test-stub.md) | P2 | L | +3 | backlog | — |
 | 04 | [Coverage report CI com threshold](./04-coverage-ci-threshold.md) | P3 | S | +3 | backlog | — |
@@ -19,7 +19,8 @@ Score atual e análise completa: ver discussão no histórico do projeto (`SCORE
 
 ## Quick stats
 
-- **Total pendente**: 8 items
+- **Total pendente**: 7 items (1 done)
+- **Score atual estimado**: 823 + 8 (item 01 done) = **831/1000**
 - **Score teto se tudo done**: 823 + 37 = **860/1000**
 - **Próximo recomendado**: `02-chrome-web-store` (mais visível pro cliente, +8 score, sem dependências)
 - **Quick wins (S effort)**: 04, 05 (~6h combinados, +5 score)

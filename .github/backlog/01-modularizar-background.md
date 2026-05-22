@@ -1,7 +1,7 @@
 ---
 id: 01
 title: Modularizar background.js em arquivos por domínio
-status: backlog
+status: done
 priority: P2
 effort: M
 score_impact: +8
