@@ -1,3 +1,23 @@
+// Spec 01: shim pra Node simular importScripts do SW.
+// Cada lib carregada via importScripts em SW também é loadable via require em Jest.
+// Aqui aliasamos self = global pra que `self.X = X` nas libs popule o global do Node.
+const path = require('path');
+if (typeof global.self === 'undefined') {
+  global.self = global;
+}
+if (typeof global.importScripts === 'undefined') {
+  global.importScripts = (...paths) => {
+    for (const p of paths) {
+      const abs = path.resolve(__dirname, '..', p);
+      delete require.cache[require.resolve(abs)]; // reload em runs subsequentes
+      const lib = require(abs);
+      if (lib && typeof lib === 'object') {
+        Object.assign(global, lib);
+      }
+    }
+  };
+}
+
 global.chrome = {
   storage: {
     local: {
