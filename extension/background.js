@@ -2,7 +2,7 @@
 // SW context (Chrome MV3): importScripts é síncrono e popula self.X
 // Node test context (Jest): chrome-mock.js shim do importScripts faz require + Object.assign(global)
 if (typeof importScripts !== "undefined") {
-  importScripts('lib/state.js', 'lib/format.js', 'lib/notifications.js', 'lib/horario.js', 'lib/telemetria.js', 'lib/telegram.js', 'lib/rate-limit.js', 'lib/schedule.js', 'lib/api.js');
+  importScripts('lib/state.js', 'lib/format.js', 'lib/notifications.js', 'lib/horario.js', 'lib/telemetria.js', 'lib/telegram.js', 'lib/rate-limit.js', 'lib/schedule.js', 'lib/api.js', 'lib/auth.js');
 }
 if (typeof require !== "undefined" && typeof module !== "undefined") {
   Object.assign(global, require('./lib/state'));
@@ -14,6 +14,7 @@ if (typeof require !== "undefined" && typeof module !== "undefined") {
   Object.assign(global, require('./lib/rate-limit'));
   Object.assign(global, require('./lib/schedule'));
   Object.assign(global, require('./lib/api'));
+  Object.assign(global, require('./lib/auth'));
 }
 
 // Telemetria movida pra lib/telemetria.js (Spec 01) — getTelemetriaLigada,
@@ -26,20 +27,7 @@ if (typeof require !== "undefined" && typeof module !== "undefined") {
 
 // getHeaders, parseRetryAfter, apiPost movidos pra lib/api.js (Spec 01)
 
-async function fazerLogin() {
-  const { USUARIO, SENHA } = await chrome.storage.local.get(["USUARIO", "SENHA"]);
-  const data = await apiPost("/auth/enterPlataforma", {
-    Usuario: String(USUARIO || "").padStart(10, "0"),
-    Senha: SENHA || "",
-    Ip: "",
-    Browser: "Chrome",
-    Acesso: "USR"
-  });
-  if (!data.success || !Array.isArray(data.data) || data.data.length === 0) {
-    throw new Error("LOGIN_FALHOU: resposta inválida");
-  }
-  return data.data[0];
-}
+// fazerLogin movido pra lib/auth.js (Spec 01)
 
 async function buscarGrupos(idUsuario) {
   const { USUARIO } = await chrome.storage.local.get(["USUARIO"]);
