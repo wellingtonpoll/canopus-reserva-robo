@@ -1875,6 +1875,64 @@ describe("Issue 2: auto-stop quando todos limites atingidos", () => {
   });
 });
 
+describe("Spec 03: localStorage hydrate", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockSleep();
+    chrome.storage.local.get.mockResolvedValue({ USUARIO: "8158", SENHA: "test" });
+    chrome.storage.session.get.mockResolvedValue({});
+  });
+
+  test("fazerLogin persiste tokenLogin + userPayload em storage.local quando TokenLogin presente", async () => {
+    const loginPayload = {
+      IdUsuario: 313, IdEmpresa: 1, Usuario: "0000008158",
+      TokenLogin: "a1d7944a-90e5-449e-974e-ddc3d07b7123",
+      NomePessoa: "F M M SERVICOS"
+    };
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({ success: true, data: [loginPayload] })
+    });
+
+    await fazerLogin();
+
+    const setCall = chrome.storage.local.set.mock.calls.find(
+      c => c[0] && c[0].tokenLogin === "a1d7944a-90e5-449e-974e-ddc3d07b7123"
+    );
+    expect(setCall).toBeDefined();
+    expect(setCall[0].userPayload).toMatchObject({ IdUsuario: 313, TokenLogin: "a1d7944a-90e5-449e-974e-ddc3d07b7123" });
+  });
+
+  test("fazerLogin NÃO persiste hydrate keys se response sem TokenLogin", async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({ success: true, data: [{ IdUsuario: 313 }] })
+    });
+
+    await fazerLogin();
+
+    const hydrateSet = chrome.storage.local.set.mock.calls.find(
+      c => c[0] && c[0].tokenLogin !== undefined
+    );
+    expect(hydrateSet).toBeUndefined();
+  });
+
+  test("storage.set falha gracioso (no throw) se hydrate persist falhar", async () => {
+    const loginPayload = {
+      IdUsuario: 313, IdEmpresa: 1,
+      TokenLogin: "uuid-aaa-bbb"
+    };
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true, status: 200,
+      json: async () => ({ success: true, data: [loginPayload] })
+    });
+    chrome.storage.local.set.mockRejectedValueOnce(new Error("storage quota exceeded"));
+
+    const result = await fazerLogin();
+    expect(result).toMatchObject({ TokenLogin: "uuid-aaa-bbb" });
+  });
+});
+
 describe("Fix 16 Lote A: handleTurnstileChallenge sinaliza badge", () => {
   beforeEach(() => {
     jest.clearAllMocks();

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Canopus Reserva Robô",
   "short_name": "Canopus Robô",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "Automatize o monitoramento e a reserva de cotas no Portal Parceiros Canopus, com notificações em tempo real via Telegram.",
   "author": "Wellington Luiz do Nascimento",
   "homepage_url": "https://github.com/wellingtonpoll/canopus-reserva-robo",
@@ -19,6 +19,11 @@
     "https://prod-api-portalparceiro-canopus.bsn.dev.br/*"
   ],
   "content_scripts": [
+    {
+      "matches": ["https://parceiros.consorciocanopus.com.br/apps/*"],
+      "js": ["hydrate.js"],
+      "run_at": "document_start"
+    },
     {
       "matches": ["https://parceiros.consorciocanopus.com.br/apps/*"],
       "js": ["content.js"],

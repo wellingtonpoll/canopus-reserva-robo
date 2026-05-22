@@ -5,6 +5,33 @@ Todas mudanças notáveis deste projeto serão documentadas aqui.
 Formato baseado em [Keep a Changelog](https://keepachangelog.com/), versionamento
 [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-05-22
+
+### Added
+- **Auto-login autônomo via localStorage hijack (Spec 03)** — cliente NÃO precisa mais fazer login UI manual no portal Canopus. Após primeira config de USUARIO+SENHA, robô chama `/auth/enterPlataforma` via API (sem 2FA), persiste `TokenLogin` + user payload em `chrome.storage.local`, e novo content-script `hydrate.js` (`run_at: document_start`) injeta em `localStorage` da janela criada antes do Angular bootstrap. SPA acredita que cliente está logado e monta UI normal.
+- Novo arquivo `extension/hydrate.js` — content-script document_start (~45 LOC)
+- Telemetria `hydrate.localstorage_injected` + `hydrate.err`
+
+### Changed
+- `lib/auth.js fazerLogin()` agora persiste `tokenLogin` + `userPayload` em `chrome.storage.local` após response sucesso
+- `lib/loop.js` TTL 6h limpa `tokenLogin`/`userPayload` junto com `idUsuario`
+- `lib/portal.js` LOGIN_NECESSARIO limpa hydrate state pra forçar fresh login API no próximo ciclo
+- `manifest.json` content_scripts ganha entry document_start
+
+### Diagnóstico (pré-requisito Fase 1)
+- Script DevTools rodado no portal logado revelou:
+  - Portal usa **localStorage** pra auth UI, NÃO cookies
+  - `localStorage.token` = base64 do `TokenLogin` UUID
+  - `localStorage.user` = base64 do JSON user payload
+  - API headers = só `secret`/`token` públicos hardcoded (já em `lib/api.js`)
+  - Backend identifica usuário via `IdUsuario` no path/body, não em header
+
+### Infrastructure
+- 186 → 189 testes verde (+3 cobrindo persist em fazerLogin, no-persist sem TokenLogin, graceful fallback se storage falha)
+
+### Removed
+- Pré-requisito "cliente loga UI 1× no portal" — robô faz tudo sozinho
+
 ## [1.3.0] - 2026-05-22
 
 ### Added
@@ -157,6 +184,7 @@ Formato baseado em [Keep a Changelog](https://keepachangelog.com/), versionament
 - AIMD delay (multiplicação × 2 em rate limit, decay × 0.9 em ciclos limpos)
 - Jest test suite (105 testes iniciais)
 
+[1.4.0]: https://github.com/wellingtonpoll/canopus-reserva-robo/releases/tag/v1.4.0
 [1.3.0]: https://github.com/wellingtonpoll/canopus-reserva-robo/releases/tag/v1.3.0
 [1.2.2]: https://github.com/wellingtonpoll/canopus-reserva-robo/releases/tag/v1.2.2
 [1.2.1]: https://github.com/wellingtonpoll/canopus-reserva-robo/releases/tag/v1.2.1

@@ -87,7 +87,12 @@ async function runPollingLoop() {
   const ID_USUARIO_TTL_MS = 6 * 60 * 60 * 1000; // 6h
   const { idUsuarioObtidoEm } = await chrome.storage.local.get(["idUsuarioObtidoEm"]);
   if (idUsuarioObtidoEm && Date.now() - idUsuarioObtidoEm > ID_USUARIO_TTL_MS) {
-    await chrome.storage.local.remove(["idUsuario", "idEmpresa", "idUsuarioObtidoEm"]);
+    // Spec 03: limpa tokenLogin/userPayload junto pra forçar re-hidratação no
+    // próximo ciclo (TokenLogin pode ter expirado no backend).
+    await chrome.storage.local.remove([
+      "idUsuario", "idEmpresa", "idUsuarioObtidoEm",
+      "tokenLogin", "userPayload"
+    ]);
     notificarPopup("🔄 Sessão Canopus expirada (>6h). Re-autenticando no próximo ciclo.");
   }
 

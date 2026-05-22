@@ -13,7 +13,20 @@ async function fazerLogin() {
   if (!data.success || !Array.isArray(data.data) || data.data.length === 0) {
     throw new Error("LOGIN_FALHOU: resposta inválida");
   }
-  return data.data[0];
+  const loginData = data.data[0];
+  // Spec 03: persiste TokenLogin + user payload pra hydrate.js (content-script
+  // document_start) hidratar localStorage da janela criada via garantirAbaPortal.
+  // Resultado: Angular SPA acredita que cliente está logado — robô autônomo
+  // sem cliente nunca abrir UI de login (zero 2FA fricção).
+  if (loginData && loginData.TokenLogin) {
+    try {
+      await chrome.storage.local.set({
+        tokenLogin: loginData.TokenLogin,
+        userPayload: loginData
+      });
+    } catch (_) { /* hydrate falha gracioso → fallback LOGIN_NECESSARIO do Lote E */ }
+  }
+  return loginData;
 }
 
 // ─── Exports ────────────────────────────────────────────────────────────────

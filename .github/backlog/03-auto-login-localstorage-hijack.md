@@ -1,7 +1,7 @@
 ---
 id: 03
 title: Auto-login via localStorage hijack (content-script document_start)
-status: backlog
+status: done
 priority: P1
 effort: M
 score_impact: +5

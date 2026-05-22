@@ -178,6 +178,14 @@ async function garantirAbaPortal() {
       status: statusFinal,
       motivo: "URL_FORA_DE_APPS"
     });
+    // Spec 03: hydrate.js pode ter falhado OU TokenLogin expirou no backend.
+    // Limpa state pra forçar fresh login API no próximo ciclo.
+    try {
+      await chrome.storage.local.remove([
+        "idUsuario", "idEmpresa", "idUsuarioObtidoEm",
+        "tokenLogin", "userPayload"
+      ]);
+    } catch (_) {}
     const msg = `🔐 Robô abriu o portal mas você precisa fazer login (URL atual: ${urlFinal.split("?")[0]}). Faça login e mantenha a aba aberta — o robô usa a sessão dela.`;
     notificarPopup(msg);
     telegramNotify(msg).catch(() => {});
