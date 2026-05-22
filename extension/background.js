@@ -2,11 +2,12 @@
 // SW context (Chrome MV3): importScripts é síncrono e popula self.X
 // Node test context (Jest): chrome-mock.js shim do importScripts faz require + Object.assign(global)
 if (typeof importScripts !== "undefined") {
-  importScripts('lib/state.js', 'lib/format.js');
+  importScripts('lib/state.js', 'lib/format.js', 'lib/notifications.js');
 }
 if (typeof require !== "undefined" && typeof module !== "undefined") {
   Object.assign(global, require('./lib/state'));
   Object.assign(global, require('./lib/format'));
+  Object.assign(global, require('./lib/notifications'));
 }
 
 // Módulo-private em telemetria — ficará em lib/telemetria.js em commit futuro.
@@ -843,20 +844,7 @@ function removerGrupoDoConfig(configStr, grupoId) {
     .join(",");
 }
 
-function notificarPopup(text) {
-  chrome.runtime.sendMessage({ action: "log", text }).catch(() => {});
-}
-
-// Fix 14 U1: persistir último erro em storage.session pra popup recuperar ao reabrir.
-// Popup limpa quando fecha — sem persistência o ERRO no footer some.
-async function registrarUltimoErroPersistente(texto) {
-  if (!texto) return;
-  const t = String(texto).replace(/[❌💣🚫]/g, "").trim();
-  if (!t) return;
-  try {
-    await chrome.storage.session.set({ ultimoErro: { texto: t.slice(0, 200), t: Date.now() } });
-  } catch (_) {}
-}
+// notificarPopup, registrarUltimoErroPersistente movidos pra lib/notifications.js (Spec 01)
 
 // TELEGRAM_TIMEOUT_MS movido pra lib/state.js (Spec 01)
 
