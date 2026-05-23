@@ -1660,14 +1660,17 @@ describe("Fix 9 — mutex runPollingLoop", () => {
 
   test("lock stale (>90s) é ignorado, novo ciclo passa", async () => {
     chrome.storage.local.get.mockImplementation(async (keys) => {
-      if (Array.isArray(keys) && keys.includes("GRUPOS_CONFIG")) {
-        return {
-          idUsuario: 99, idEmpresa: 1, USUARIO: "12345",
-          GRUPOS_CONFIG: "009999:3", MODO_TESTE: true,
-          reservasPorGrupo: {}, TELEGRAM_TOKEN: "", TELEGRAM_CHAT_ID: ""
-        };
+      const all = {
+        idUsuario: 99, idEmpresa: 1, USUARIO: "12345",
+        GRUPOS_CONFIG: "009999:3", MODO_TESTE: true,
+        reservasPorGrupo: {}, TELEGRAM_TOKEN: "", TELEGRAM_CHAT_ID: ""
+      };
+      if (Array.isArray(keys)) {
+        const out = {};
+        keys.forEach(k => { if (k in all) out[k] = all[k]; });
+        return out;
       }
-      return {};
+      return all;
     });
 
     chrome.storage.session.get.mockImplementation(async (keys) => {
@@ -1690,14 +1693,17 @@ describe("Fix 9 — mutex runPollingLoop", () => {
 
   test("lock é liberado no finally (cycleRunning volta a false)", async () => {
     chrome.storage.local.get.mockImplementation(async (keys) => {
-      if (Array.isArray(keys) && keys.includes("GRUPOS_CONFIG")) {
-        return {
-          idUsuario: 99, idEmpresa: 1, USUARIO: "12345",
-          GRUPOS_CONFIG: "009999:3", MODO_TESTE: true,
-          reservasPorGrupo: {}, TELEGRAM_TOKEN: "", TELEGRAM_CHAT_ID: ""
-        };
+      const all = {
+        idUsuario: 99, idEmpresa: 1, USUARIO: "12345",
+        GRUPOS_CONFIG: "009999:3", MODO_TESTE: true,
+        reservasPorGrupo: {}, TELEGRAM_TOKEN: "", TELEGRAM_CHAT_ID: ""
+      };
+      if (Array.isArray(keys)) {
+        const out = {};
+        keys.forEach(k => { if (k in all) out[k] = all[k]; });
+        return out;
       }
-      return {};
+      return all;
     });
 
     chrome.storage.session.get.mockResolvedValue({ isRunning: true });
