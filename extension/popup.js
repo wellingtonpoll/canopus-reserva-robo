@@ -222,7 +222,7 @@ function ultimosDias(n) {
   for (let i = n - 1; i >= 0; i--) {
     const d = new Date(hoje);
     d.setDate(d.getDate() - i);
-    arr.push(d.toISOString().slice(0, 10));
+    arr.push(d.toLocaleDateString('en-CA'));
   }
   return arr;
 }
