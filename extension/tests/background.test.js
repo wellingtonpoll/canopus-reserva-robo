@@ -410,13 +410,13 @@ describe("reservarComLimite (via content-script)", () => {
     expect(gruposConfigSet).toBeUndefined();
   });
 
-  test("TURNSTILE_TIMEOUT do content-script — grava cooldown 60s e não corrompe contador", async () => {
+  test("TURNSTILE_TIMEOUT do content-script — grava cooldown e não corrompe contador", async () => {
     mockTabAberta({ ok: false, erro: "TURNSTILE_TIMEOUT" });
     const out = await reservarComLimite(mockGrupo, 99, 1, "009113", 3, {}, false);
     expect(out).toMatchObject({ reservou: false, turnstile: true });
     const coolCall = chrome.storage.session.set.mock.calls.find(c => c[0].gruposEmCooldown);
     expect(coolCall).toBeDefined();
-    expect(coolCall[0].gruposEmCooldown["009113"]).toBeGreaterThan(Date.now() + 50_000);
+    expect(coolCall[0].gruposEmCooldown["009113"]).toBeGreaterThan(Date.now() + 20_000);
     const counterSet = chrome.storage.local.set.mock.calls.find(c => c[0].reservasPorGrupo);
     expect(counterSet).toBeUndefined();
   });

@@ -13,12 +13,12 @@
   // Esconde helpers da janela em produção (anti-bot)
   const DEBUG = false;
 
-  const TURNSTILE_INVISIBLE_TIMEOUT_MS = 10_000;
+  const TURNSTILE_INVISIBLE_TIMEOUT_MS = 20_000;
   const TURNSTILE_INTERACTIVE_TIMEOUT_MS = 30_000;
   const TURNSTILE_DETECTAR_INTERATIVO_MS = 5_000;
   const POLL_INTERVAL_MS = 200;
 
-  const MODAL_GRUPO_TIMEOUT_MS = 12_000;
+  const MODAL_GRUPO_TIMEOUT_MS = 15_000;
   const MODAL_DADOS_TIMEOUT_MS = 15_000;
   const TOAST_TIMEOUT_MS = 20_000;
   const ACAO_DEFAULT_TIMEOUT_MS = 8_000;
@@ -207,9 +207,16 @@
   }
 
   async function aguardarModalSelecioneGrupo() {
+    // Rejeita modal em estado de loading ("Aguarde...") ou sem rows renderizadas —
+    // evita selecionarLinhaGrupo retornar GRUPO_NAO_ENCONTRADO_NO_MODAL no cold-start.
     const modal = await aguardarElemento("aguardarModalSelecioneGrupo", [
       { tipo: "predicate", all: 'mat-dialog-container, [role="dialog"], [aria-modal="true"]',
-        fn: el => /selecione\s+um\s+grupo/i.test(textoNormalizado(el)) }
+        fn: el => {
+          const txt = textoNormalizado(el);
+          if (!/selecione\s+um\s+grupo/i.test(txt)) return false;
+          if (/aguarde/i.test(txt)) return false;
+          return el.querySelector('mat-row, [role="row"]') !== null;
+        } }
     ], MODAL_GRUPO_TIMEOUT_MS);
     if (!modal) throw new Error("MODAL_SELECIONE_GRUPO_NAO_ABRIU");
     telemetriaSend("content.modal.appeared", { nomeModal: "selecione_grupo" });

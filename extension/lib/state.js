@@ -26,7 +26,7 @@ const CIRCUIT_OPEN_MS        = 10 * 60_000; // pausa de 10min
 const GRUPO_COOLDOWN_MS = 30_000;
 
 // Cooldown maior quando Turnstile falha/timeout — usuário ainda pode estar resolvendo no portal
-const TURNSTILE_COOLDOWN_MS = 60_000;
+const TURNSTILE_COOLDOWN_MS = 30_000;
 
 // Pausa do polling loop quando content-script avisa que Turnstile está em modo interativo
 const TURNSTILE_BLOQUEIO_MS = 30_000;
